@@ -39,4 +39,21 @@ class TransactionRepository(private val dao: TransactionDao) {
         dao.getExpenseGroupByCategory(startTime, endTime)
 
     fun search(keyword: String): Flow<List<Transaction>> = dao.search(keyword)
+
+    /** 聚合用轻量投影（AI 消费体检） */
+    suspend fun getPointsInRange(startTime: Long, endTime: Long) =
+        dao.getPointsInRange(startTime, endTime)
+
+    suspend fun getExpenseSumOnce(startTime: Long, endTime: Long): Double =
+        dao.getExpenseSumOnce(startTime, endTime)
+
+    suspend fun getIncomeSumOnce(startTime: Long, endTime: Long): Double =
+        dao.getIncomeSumOnce(startTime, endTime)
+
+    /** 周期内支出笔数（AI 体检 Idle 态用，避免为数笔数拉全量投影） */
+    suspend fun getExpenseCountInRange(startTime: Long, endTime: Long): Int =
+        dao.getExpenseCountInRange(startTime, endTime)
+
+    /** 最后一次写入时间，用于判断 AI 报告缓存是否已陈旧 */
+    suspend fun getLatestCreatedAt(): Long? = dao.getLatestCreatedAt()
 }

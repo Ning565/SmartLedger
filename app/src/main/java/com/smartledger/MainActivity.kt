@@ -325,7 +325,12 @@ fun MainApp() {
     Scaffold(
         containerColor = SmartLedgerColors.bg,
         bottomBar = {
-            if (currentRoute != "permission" && currentRoute != "search") {
+            // 记账页与 AI 设置页不再属于底部 Tab（记账已改为 FAB 入口），
+            // 继续显示底部栏会出现「四个 Tab 全未选中」的尴尬状态，因此隐藏。
+            val hideBottomBar = currentRoute in setOf(
+                "permission", "search", "record", "ai_settings"
+            )
+            if (!hideBottomBar) {
                 NavigationBar(
                     containerColor = SmartLedgerColors.surface,
                     tonalElevation = 0.dp
@@ -367,10 +372,8 @@ fun MainApp() {
             composable(Screen.Home.route) {
                 HomeScreen(
                     onNavigateToRecord = {
-                        navController.navigate(Screen.Record.route) {
-                            popUpTo(Screen.Home.route) { saveState = true }
+                        navController.navigate("record") {
                             launchSingleTop = true
-                            restoreState = true
                         }
                     },
                     onNavigateToSearch = {
@@ -387,19 +390,30 @@ fun MainApp() {
                     }
                 )
             }
-            composable(Screen.Record.route) {
-                RecordScreen(
-                    onSaved = {
-                        navController.navigate(Screen.Home.route) {
-                            popUpTo(Screen.Home.route) { inclusive = true }
-                        }
+            // 流水页：按月完整账单列表 + 收支筛选
+            composable(Screen.Transactions.route) {
+                com.smartledger.ui.transactions.TransactionsScreen(
+                    onNavigateToRecord = {
+                        navController.navigate("record") { launchSingleTop = true }
+                    },
+                    onNavigateToSearch = {
+                        navController.navigate("search")
                     }
                 )
             }
-            composable(Screen.Statistics.route) {
-                StatisticsScreen()
+            composable("record") {
+                RecordScreen(
+                    // 记账页现在可能从总览或流水进入，
+                    // 因此回到**来源页**而不是写死跳首页
+                    onSaved = { navController.popBackStack() }
+                )
             }
-            composable(Screen.Profile.route) {
+            composable(Screen.Statistics.route) {
+                StatisticsScreen(
+                    onNavigateToAiSettings = { navController.navigate("ai_settings") }
+                )
+            }
+            composable(Screen.Settings.route) {
                 ProfileScreen(
                     onNavigateToBudget = {
                         navController.navigate("budget")
@@ -412,6 +426,9 @@ fun MainApp() {
                     },
                     onNavigateToBackup = {
                         navController.navigate("backup")
+                    },
+                    onNavigateToAiSettings = {
+                        navController.navigate("ai_settings")
                     },
                     onExport = {
                         navController.navigate("export")
@@ -442,7 +459,14 @@ fun MainApp() {
                 com.smartledger.ui.settings.SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onNavigateToFeedback = { navController.navigate("feedback") },
-                    onNavigateToPrivacy = { navController.navigate("privacy") }
+                    onNavigateToPrivacy = { navController.navigate("privacy") },
+                    onNavigateToAiSettings = { navController.navigate("ai_settings") }
+                )
+            }
+            // AI 财务顾问配置页
+            composable("ai_settings") {
+                com.smartledger.ui.settings.AiSettingsScreen(
+                    onBack = { navController.popBackStack() }
                 )
             }
             composable("feedback") {

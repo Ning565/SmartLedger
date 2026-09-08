@@ -1,141 +1,235 @@
 package com.smartledger.ui.theme
 
 import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// ═══════════════════════════════════════════════════════
-// SmartLedger Design Tokens — 暖白 Linear 风格
-// ═══════════════════════════════════════════════════════
-
-// 亮色基础色
-val Background = Color(0xFFFAFAF8)
-val Surface = Color(0xFFFFFFFF)
-val SurfaceHover = Color(0xFFF5F5F3)
-val Foreground = Color(0xFF1A1A1A)
-val ForegroundSecondary = Color(0xFF8B8B8B)
-val Border = Color(0xFFE8E8E4)
-val BorderSubtle = Color(0xFFF0F0EC)
-
-// 深色基础色
-val DarkBackground = Color(0xFF111113)
-val DarkSurface = Color(0xFF1A1A1E)
-val DarkSurfaceHover = Color(0xFF232328)
-val DarkForeground = Color(0xFFE8E8EA)
-val DarkForegroundSecondary = Color(0xFF8A8A8E)
-val DarkBorder = Color(0xFF2A2A2E)
-val DarkBorderSubtle = Color(0xFF222226)
-
-// 强调色
-val Accent = Color(0xFF6C63FF)
-val AccentDim = Color(0x1F6C63FF)
-val DarkAccentDim = Color(0x336C63FF)
-
-// 收支配色
-val ExpenseRed = Color(0xFFD94848)
-val ExpenseRedDim = Color(0x1AD94848)
-val IncomeGreen = Color(0xFF2D9D63)
-val IncomeGreenDim = Color(0x1A2D9D63)
-
-// 图表色
-val ChartGray1 = Color(0xFF94A3B8)
-val ChartGray2 = Color(0xFFA8B8CC)
-val ChartGray3 = Color(0xFFBCC8DA)
-val ChartGray4 = Color(0xFFCBD5E1)
-val ChartGray5 = Color(0xFFDDE4ED)
-val ChartGray6 = Color(0xFFE8EDF3)
-
-val DarkChartGray1 = Color(0xFF475569)
-val DarkChartGray2 = Color(0xFF526275)
-val DarkChartGray3 = Color(0xFF5D6F85)
-val DarkChartGray4 = Color(0xFF687C95)
-val DarkChartGray5 = Color(0xFF7389A5)
-val DarkChartGray6 = Color(0xFF7E96B5)
-
-// 底部导航
-val NavUnselected = Color(0xFFB0B0B0)
-val NavSelected = Foreground
-val DarkNavUnselected = Color(0xFF666668)
-val DarkNavSelected = DarkForeground
+/**
+ * SmartLedger 主题 —— 「个人财务研究仪表盘」
+ *
+ * 固定品牌色，**不启用 Material 3 Dynamic Color**：
+ * 动态取色会让每台设备的记账页颜色都不一样，破坏数据仪表盘的
+ * 一致性与可信度，也与「学术、精确、安静」的基调冲突。
+ */
 
 // ═══════════════════════════════════════════════════════
-// 自定义颜色扩展
+// 扩展色：语义化令牌（亮 / 暗两套）
 // ═══════════════════════════════════════════════════════
 
 @Immutable
 data class ExtendedColors(
-    val expense: Color = ExpenseRed,
-    val expenseDim: Color = ExpenseRedDim,
-    val income: Color = IncomeGreen,
-    val incomeDim: Color = IncomeGreenDim,
-    val accent: Color = Accent,
-    val accentDim: Color = AccentDim,
-    val background: Color = Background,
-    val surface: Color = Surface,
-    val surfaceHover: Color = SurfaceHover,
-    val foreground: Color = Foreground,
-    val foregroundSecondary: Color = ForegroundSecondary,
-    val border: Color = Border,
-    val navUnselected: Color = NavUnselected,
-    val navSelected: Color = NavSelected,
-    val chartColors: List<Color> = listOf(
-        ChartGray1, ChartGray2, ChartGray3, ChartGray4, ChartGray5, ChartGray6
-    )
+    // 墨
+    val ink: Color,
+    val inkSoft: Color,
+    val inkFaint: Color,
+    // 纸
+    val paper: Color,
+    val paperStrong: Color,
+    val paperDeep: Color,
+    // 语义
+    val seal: Color,
+    val moss: Color,
+    val amber: Color,
+    val blue: Color,
+    val violet: Color,
+    val lavender: Color,
+    // 语义浅底
+    val sealTint: Color,
+    val mossTint: Color,
+    val amberTint: Color,
+    val blueTint: Color,
+    val violetTint: Color,
+    val inkTint: Color,
+    // 边框（Ink 12% / 16%）
+    val borderSoft: Color,
+    val borderStrong: Color,
+    // 深墨之上的前景
+    val onAccent: Color,
+    // 图表
+    val chartColors: List<Color>,
+    // 底部导航
+    val navSelected: Color,
+    val navUnselected: Color,
+
+    // ═══ 兼容别名 ═══
+    // 保留旧字段名，使既有页面在迁移过程中不会因改名而编译失败；
+    // 新代码请优先使用上面的语义名。
+    val expense: Color,
+    val expenseDim: Color,
+    val income: Color,
+    val incomeDim: Color,
+    val accent: Color,
+    val accentDim: Color,
+    val background: Color,
+    val surface: Color,
+    val surfaceHover: Color,
+    val foreground: Color,
+    val foregroundSecondary: Color,
+    val border: Color
 )
 
-val LocalExtendedColors = staticCompositionLocalOf { ExtendedColors() }
+private fun lightColors() = ExtendedColors(
+    ink = Palette.Ink,
+    inkSoft = Palette.InkSoft,
+    inkFaint = Palette.InkFaint,
+    paper = Palette.Paper,
+    paperStrong = Palette.PaperStrong,
+    paperDeep = Palette.PaperDeep,
+    seal = Palette.Seal,
+    moss = Palette.Moss,
+    amber = Palette.Amber,
+    blue = Palette.Blue,
+    violet = Palette.Violet,
+    lavender = Palette.Lavender,
+    sealTint = Palette.SealTint,
+    mossTint = Palette.MossTint,
+    amberTint = Palette.AmberTint,
+    blueTint = Palette.BlueTint,
+    violetTint = Palette.VioletTint,
+    inkTint = Palette.InkTint,
+    borderSoft = Palette.BorderSoft,
+    borderStrong = Palette.BorderStrong,
+    onAccent = Palette.OnAccent,
+    chartColors = Palette.ChartRampLight,
+    navSelected = Palette.Ink,
+    navUnselected = Palette.InkFaint,
+    // 别名
+    expense = Palette.Seal,
+    expenseDim = Palette.SealTint,
+    income = Palette.Moss,
+    incomeDim = Palette.MossTint,
+    accent = Palette.Ink,
+    accentDim = Palette.InkTint,
+    background = Palette.Paper,
+    surface = Palette.PaperStrong,
+    surfaceHover = Palette.PaperDeep,
+    foreground = Palette.Ink,
+    foregroundSecondary = Palette.InkSoft,
+    border = Palette.BorderSoft
+)
+
+private fun darkColors() = ExtendedColors(
+    ink = Palette.DarkInk,
+    inkSoft = Palette.DarkInkSoft,
+    inkFaint = Palette.DarkInkFaint,
+    paper = Palette.DarkPaper,
+    paperStrong = Palette.DarkPaperStrong,
+    paperDeep = Palette.DarkPaperDeep,
+    seal = Palette.DarkSeal,
+    moss = Palette.DarkMoss,
+    amber = Palette.DarkAmber,
+    blue = Palette.DarkBlue,
+    violet = Palette.DarkViolet,
+    lavender = Palette.DarkLavender,
+    sealTint = Palette.DarkSealTint,
+    mossTint = Palette.DarkMossTint,
+    amberTint = Palette.DarkAmberTint,
+    blueTint = Palette.DarkBlueTint,
+    violetTint = Palette.DarkVioletTint,
+    inkTint = Palette.DarkInkTint,
+    borderSoft = Palette.DarkBorderSoft,
+    borderStrong = Palette.DarkBorderStrong,
+    onAccent = Palette.DarkPaper,
+    chartColors = Palette.ChartRampDark,
+    navSelected = Palette.DarkInk,
+    navUnselected = Palette.DarkInkFaint,
+    // 别名
+    expense = Palette.DarkSeal,
+    expenseDim = Palette.DarkSealTint,
+    income = Palette.DarkMoss,
+    incomeDim = Palette.DarkMossTint,
+    accent = Palette.DarkInk,
+    accentDim = Palette.DarkInkTint,
+    background = Palette.DarkPaper,
+    surface = Palette.DarkPaperStrong,
+    surfaceHover = Palette.DarkPaperDeep,
+    foreground = Palette.DarkInk,
+    foregroundSecondary = Palette.DarkInkSoft,
+    border = Palette.DarkBorderSoft
+)
+
+val LocalExtendedColors = staticCompositionLocalOf { lightColors() }
 
 // ═══════════════════════════════════════════════════════
-// Material 3 配色方案
+// Material 3 映射（按设计规范固定）
+//   primary=#171714  secondary=#315D6F  tertiary=#6257C8
+//   error=#C9482F    surface=#FFFDF7    surfaceContainer=#F3EFE5
 // ═══════════════════════════════════════════════════════
 
 private val LightColorScheme = lightColorScheme(
-    primary = Accent,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFEDE9FF),
-    onPrimaryContainer = Color(0xFF3D2DB5),
-    secondary = ForegroundSecondary,
-    onSecondary = Color.White,
-    secondaryContainer = SurfaceHover,
-    onSecondaryContainer = Foreground,
-    tertiary = IncomeGreen,
-    onTertiary = Color.White,
-    background = Background,
-    onBackground = Foreground,
-    surface = Surface,
-    onSurface = Foreground,
-    surfaceVariant = SurfaceHover,
-    onSurfaceVariant = ForegroundSecondary,
-    outline = Border,
-    outlineVariant = BorderSubtle,
+    primary = Palette.Ink,
+    onPrimary = Palette.OnAccent,
+    primaryContainer = Palette.PaperDeep,
+    onPrimaryContainer = Palette.Ink,
+    secondary = Palette.Blue,
+    onSecondary = Palette.OnAccent,
+    secondaryContainer = Palette.BlueTint,
+    onSecondaryContainer = Palette.Blue,
+    tertiary = Palette.Violet,
+    onTertiary = Palette.OnAccent,
+    tertiaryContainer = Palette.Lavender,
+    onTertiaryContainer = Palette.Violet,
+    error = Palette.Seal,
+    onError = Palette.OnAccent,
+    errorContainer = Palette.SealTint,
+    onErrorContainer = Palette.Seal,
+    background = Palette.Paper,
+    onBackground = Palette.Ink,
+    surface = Palette.PaperStrong,
+    onSurface = Palette.Ink,
+    surfaceVariant = Palette.PaperDeep,
+    onSurfaceVariant = Palette.InkSoft,
+    surfaceContainer = Palette.Paper,
+    surfaceContainerLow = Palette.PaperStrong,
+    surfaceContainerHigh = Palette.PaperDeep,
+    outline = Palette.BorderStrong,
+    outlineVariant = Palette.BorderSoft,
+    scrim = Color(0x66171714)
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Accent,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF2D2466),
-    onPrimaryContainer = Color(0xFFCBC2FF),
-    secondary = DarkForegroundSecondary,
-    onSecondary = Color.White,
-    secondaryContainer = DarkSurfaceHover,
-    onSecondaryContainer = DarkForeground,
-    tertiary = IncomeGreen,
-    onTertiary = Color.White,
-    background = DarkBackground,
-    onBackground = DarkForeground,
-    surface = DarkSurface,
-    onSurface = DarkForeground,
-    surfaceVariant = DarkSurfaceHover,
-    onSurfaceVariant = DarkForegroundSecondary,
-    outline = DarkBorder,
-    outlineVariant = DarkBorderSubtle,
+    primary = Palette.DarkInk,
+    onPrimary = Palette.DarkPaper,
+    primaryContainer = Palette.DarkPaperDeep,
+    onPrimaryContainer = Palette.DarkInk,
+    secondary = Palette.DarkBlue,
+    onSecondary = Palette.DarkPaper,
+    secondaryContainer = Palette.DarkBlueTint,
+    onSecondaryContainer = Palette.DarkBlue,
+    tertiary = Palette.DarkViolet,
+    onTertiary = Palette.DarkPaper,
+    tertiaryContainer = Palette.DarkLavender,
+    onTertiaryContainer = Palette.DarkViolet,
+    error = Palette.DarkSeal,
+    onError = Palette.DarkPaper,
+    errorContainer = Palette.DarkSealTint,
+    onErrorContainer = Palette.DarkSeal,
+    background = Palette.DarkPaper,
+    onBackground = Palette.DarkInk,
+    surface = Palette.DarkPaperStrong,
+    onSurface = Palette.DarkInk,
+    surfaceVariant = Palette.DarkPaperDeep,
+    onSurfaceVariant = Palette.DarkInkSoft,
+    surfaceContainer = Palette.DarkPaper,
+    surfaceContainerLow = Palette.DarkPaperStrong,
+    surfaceContainerHigh = Palette.DarkPaperDeep,
+    outline = Palette.DarkBorderStrong,
+    outlineVariant = Palette.DarkBorderSoft,
+    scrim = Color(0x99000000)
 )
 
 // ═══════════════════════════════════════════════════════
@@ -174,32 +268,26 @@ fun SmartLedgerTheme(
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
     }
 
+    // 固定品牌色：刻意不调用 dynamicLightColorScheme / dynamicDarkColorScheme
     val colorScheme = if (isDark) DarkColorScheme else LightColorScheme
-
-    val extendedColors = if (isDark) ExtendedColors(
-        accentDim = DarkAccentDim,
-        background = DarkBackground,
-        surface = DarkSurface,
-        surfaceHover = DarkSurfaceHover,
-        foreground = DarkForeground,
-        foregroundSecondary = DarkForegroundSecondary,
-        border = DarkBorder,
-        navUnselected = DarkNavUnselected,
-        navSelected = DarkNavSelected,
-        chartColors = listOf(DarkChartGray1, DarkChartGray2, DarkChartGray3, DarkChartGray4, DarkChartGray5, DarkChartGray6)
-    ) else ExtendedColors()
+    val extendedColors = if (isDark) darkColors() else lightColors()
 
     // 状态栏颜色（仅 Activity 场景；悬浮窗等非 Activity Context 不可强转）
     val view = LocalView.current
     if (syncSystemBars && !view.isInEditMode) {
         SideEffect {
             val activity = view.context as? Activity ?: return@SideEffect
-            activity.window.statusBarColor = extendedColors.background.toArgb()
-            WindowCompat.getInsetsController(activity.window, view).isAppearanceLightStatusBars = !isDark
+            @Suppress("DEPRECATION")
+            activity.window.statusBarColor = extendedColors.paper.toArgb()
+            WindowCompat.getInsetsController(activity.window, view)
+                .isAppearanceLightStatusBars = !isDark
         }
     }
 
-    CompositionLocalProvider(LocalExtendedColors provides extendedColors) {
+    CompositionLocalProvider(
+        LocalExtendedColors provides extendedColors,
+        LocalIsDarkTheme provides isDark
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,
@@ -208,36 +296,72 @@ fun SmartLedgerTheme(
     }
 }
 
-// 便捷访问扩展色
+// ═══════════════════════════════════════════════════════
+// 便捷访问
+// ═══════════════════════════════════════════════════════
+
+/**
+ * 全局颜色访问入口。
+ *
+ * 所有页面统一从这里取色，**不要在页面里写死 Color(0xFF...)**，
+ * 否则深色模式会失效、视觉也无法保持统一。
+ */
 object SmartLedgerColors {
-    val expense: Color
-        @Composable get() = LocalExtendedColors.current.expense
-    val expenseDim: Color
-        @Composable get() = LocalExtendedColors.current.expenseDim
-    val income: Color
-        @Composable get() = LocalExtendedColors.current.income
-    val incomeDim: Color
-        @Composable get() = LocalExtendedColors.current.incomeDim
-    val accent: Color
-        @Composable get() = LocalExtendedColors.current.accent
-    val accentDim: Color
-        @Composable get() = LocalExtendedColors.current.accentDim
-    val bg: Color
-        @Composable get() = LocalExtendedColors.current.background
-    val surface: Color
-        @Composable get() = LocalExtendedColors.current.surface
-    val surfaceHover: Color
-        @Composable get() = LocalExtendedColors.current.surfaceHover
-    val fg: Color
-        @Composable get() = LocalExtendedColors.current.foreground
-    val fgSecondary: Color
-        @Composable get() = LocalExtendedColors.current.foregroundSecondary
-    val border: Color
-        @Composable get() = LocalExtendedColors.current.border
-    val navUnselected: Color
-        @Composable get() = LocalExtendedColors.current.navUnselected
-    val navSelected: Color
-        @Composable get() = LocalExtendedColors.current.navSelected
-    val chartColors: List<Color>
-        @Composable get() = LocalExtendedColors.current.chartColors
+    // 墨
+    val fg: Color @Composable get() = LocalExtendedColors.current.ink
+    val fgSecondary: Color @Composable get() = LocalExtendedColors.current.inkSoft
+    val fgTertiary: Color @Composable get() = LocalExtendedColors.current.inkFaint
+
+    // 纸
+    val bg: Color @Composable get() = LocalExtendedColors.current.paper
+    val surface: Color @Composable get() = LocalExtendedColors.current.paperStrong
+    val surfaceHover: Color @Composable get() = LocalExtendedColors.current.paperDeep
+
+    // 语义
+    val expense: Color @Composable get() = LocalExtendedColors.current.seal
+    val expenseDim: Color @Composable get() = LocalExtendedColors.current.sealTint
+    val income: Color @Composable get() = LocalExtendedColors.current.moss
+    val incomeDim: Color @Composable get() = LocalExtendedColors.current.mossTint
+    val warning: Color @Composable get() = LocalExtendedColors.current.amber
+    val warningDim: Color @Composable get() = LocalExtendedColors.current.amberTint
+    val info: Color @Composable get() = LocalExtendedColors.current.blue
+    val infoDim: Color @Composable get() = LocalExtendedColors.current.blueTint
+
+    // AI 专用点色
+    val ai: Color @Composable get() = LocalExtendedColors.current.violet
+    val aiDim: Color @Composable get() = LocalExtendedColors.current.violetTint
+    val aiSurface: Color @Composable get() = LocalExtendedColors.current.lavender
+
+    // 交互强调（= Ink）
+    val accent: Color @Composable get() = LocalExtendedColors.current.ink
+    val accentDim: Color @Composable get() = LocalExtendedColors.current.inkTint
+    val onAccent: Color @Composable get() = LocalExtendedColors.current.onAccent
+
+    // 边框
+    val border: Color @Composable get() = LocalExtendedColors.current.borderSoft
+    val borderStrong: Color @Composable get() = LocalExtendedColors.current.borderStrong
+
+    // 图表 / 导航
+    val chartColors: List<Color> @Composable get() = LocalExtendedColors.current.chartColors
+    val navSelected: Color @Composable get() = LocalExtendedColors.current.navSelected
+    val navUnselected: Color @Composable get() = LocalExtendedColors.current.navUnselected
+
+    // 兼容旧别名（新代码请用语义名）
+    val foreground: Color @Composable get() = LocalExtendedColors.current.ink
+    val foregroundSecondary: Color @Composable get() = LocalExtendedColors.current.inkSoft
+    val background: Color @Composable get() = LocalExtendedColors.current.paper
+    val seal: Color @Composable get() = LocalExtendedColors.current.seal
+    val moss: Color @Composable get() = LocalExtendedColors.current.moss
+    val amber: Color @Composable get() = LocalExtendedColors.current.amber
+    val blue: Color @Composable get() = LocalExtendedColors.current.blue
+    val violet: Color @Composable get() = LocalExtendedColors.current.violet
 }
+
+/**
+ * 当前是否深色模式。
+ *
+ * 图表需要在深色下改用更浅的网格线 / 轴线，单靠语义色无法表达，
+ * 因此显式暴露一个 CompositionLocal，避免页面各自再调 isSystemInDarkTheme()
+ * （那样会漏掉用户在设置里手动指定 LIGHT / DARK 的情况）。
+ */
+val LocalIsDarkTheme = staticCompositionLocalOf { false }

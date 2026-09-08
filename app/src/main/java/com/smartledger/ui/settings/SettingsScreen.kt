@@ -30,16 +30,25 @@ import com.smartledger.ui.theme.ThemeMode
 fun SettingsScreen(
     onBack: () -> Unit = {},
     onNavigateToFeedback: () -> Unit = {},
-    onNavigateToPrivacy: () -> Unit = {}
+    onNavigateToPrivacy: () -> Unit = {},
+    onNavigateToAiSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+
+    // AI 配置状态，用于在列表项副标题里直接显示「未配置 / DeepSeek · deepseek-chat」
+    val aiSettings = remember {
+        (context.applicationContext as com.smartledger.SmartLedgerApp).aiSettingsRepository
+    }
+    val aiConfig by aiSettings.config.collectAsState()
 
     // 深色模式状态
     val themeMode by ThemeManager.themeMode
     var autoBackupEnabled by remember {
         mutableStateOf(prefs.getBoolean("auto_backup", true))
     }
+    /** AI 数据披露弹窗（与隐私政策、AI 设置页共用同一份文案） */
+    var showAiDisclosure by remember { mutableStateOf(false) }
     var debugToastsEnabled by remember {
         mutableStateOf(prefs.getBoolean("debug_toasts", false))
     }
@@ -349,6 +358,36 @@ fun SettingsScreen(
 
             item { Spacer(modifier = Modifier.height(12.dp)) }
 
+            // ═══ AI 财务顾问 ═══
+            item {
+                SectionTitle("AI 财务顾问")
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
+                ) {
+                    Column {
+                        MenuSettingItem(
+                            icon = Icons.Outlined.AutoAwesome,
+                            label = "AI 服务配置",
+                            subtitle = if (aiConfig.isConfigured) aiConfig.displayLabel else "未配置",
+                            onClick = onNavigateToAiSettings
+                        )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.PrivacyTip,
+                            label = "AI 会收到什么数据",
+                            subtitle = "本地聚合 + 商户脱敏，不含通知原文",
+                            onClick = { showAiDisclosure = true }
+                        )
+                    }
+                }
+            }
+
             // ═══ 关于 ═══
             item {
                 SectionTitle("关于")
@@ -522,6 +561,22 @@ fun SettingsScreen(
             },
             dismissText = if (retryInfo != null) "取消" else "",
             onDismiss = { updateError = null }
+        )
+    }
+
+    // ═══ AI 数据披露 ═══
+    // 文案与 AiSettingsScreen 、隐私政策保持同一口径，
+    // 三处不一致就等于隐私声明不实。
+    if (showAiDisclosure) {
+        com.smartledger.ui.components.SmartLedgerDialog(
+            onDismissRequest = { showAiDisclosure = false },
+            eyebrow = "PRIVACY",
+            title = "AI 会收到什么数据",
+            text = AI_DISCLOSURE_FULL,
+            confirmText = "知道了",
+            onConfirm = { showAiDisclosure = false },
+            dismissText = "",
+            onDismiss = { showAiDisclosure = false }
         )
     }
 }

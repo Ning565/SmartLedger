@@ -55,6 +55,7 @@ fun HomeScreen(
     val recentTransactions by viewModel.recentTransactions.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val selectedYearMonth by viewModel.selectedYearMonth.collectAsState()
+    val budgetState by viewModel.budgetState.collectAsState()
     val isCurrentMonth = selectedYearMonth == DateUtil.getCurrentYearMonth()
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -134,6 +135,21 @@ fun HomeScreen(
                     onPrevious = { viewModel.previousMonth() },
                     onNext = { viewModel.nextMonth() },
                     onGoCurrent = { viewModel.goToCurrentMonth() }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+
+            // 动态预算卡：每日建议可用额度 + 月末预测 + 超支日期
+            // 紧跟月份切换，因为「这个月能花多少」与「正在看哪个月」直接相关。
+            // 历史月份且未设预算时卡片内部会直接不渲染，这里不需要再判断。
+            item {
+                BudgetCard(
+                    prediction = budgetState,
+                    isCurrentMonth = isCurrentMonth,
+                    yearMonthLabel = selectedYearMonth,
+                    onSetLimit = { limit -> viewModel.setExpenseLimit(limit) },
+                    modifier = Modifier.padding(horizontal = 20.dp)
                 )
             }
 

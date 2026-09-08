@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 的备份 / 换机迁移规则。
+
+  与 backup_rules.xml 同一口径：AI 配置（含加密后的 API Key）既不参与云备份，
+  也不参与设备间迁移。原因是 AndroidKeyStore 密钥不随迁移走，
+  密文换到新设备后必然解不开。
+
+  记账数据库、昵称、主题等其余数据照常备份，不受影响。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="smart_ledger_ai.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="smart_ledger_ai.xml" />
+    </device-transfer>
+</data-extraction-rules>

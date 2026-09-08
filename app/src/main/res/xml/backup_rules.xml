@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动备份排除规则（Android 11 及以下 / allowBackup 路径）。
+
+  为什么要排除 smart_ledger_ai.xml：
+  这个文件里存的是用 AndroidKeyStore 加密后的 API Key 密文，
+  而 **Keystore 密钥不参与云备份、也不参与换机迁移**。
+  把密文备份到新设备后，它永远解不开，只会变成一份垃圾数据，
+  还可能让 UI 误判成「已配置」。
+
+  排除后：换机 / 恢复备份时 AI 配置需要重新填写一次，
+  这是唯一安全的行为。记账数据在 Room 数据库里，不在排除范围内，照常备份。
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="smart_ledger_ai.xml" />
+</full-backup-content>

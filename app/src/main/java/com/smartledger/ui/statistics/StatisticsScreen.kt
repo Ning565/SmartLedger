@@ -1,46 +1,88 @@
 package com.smartledger.ui.statistics
 
-import androidx.compose.foundation.Canvas
+import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.outlined.PieChart
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.smartledger.data.analytics.model.SummaryPeriod
 import com.smartledger.data.db.dao.CategoryTotal
 import com.smartledger.data.db.entity.Category
+import com.smartledger.ui.components.AuxText
+import com.smartledger.ui.components.EmptyState
+import com.smartledger.ui.components.Eyebrow
+import com.smartledger.ui.components.SectionCard
+import com.smartledger.ui.components.SectionHeader
+import com.smartledger.ui.components.SegmentedTabs
+import com.smartledger.ui.components.ThinDonut
+import com.smartledger.ui.components.ThinProgressBar
+import com.smartledger.ui.components.UiTokens
+import com.smartledger.ui.components.categoryIcon
+import com.smartledger.ui.components.formatMoney
+import com.smartledger.ui.components.formatPercent
+import com.smartledger.ui.theme.AppRadius
+import com.smartledger.ui.theme.AppSpacing
+import com.smartledger.ui.theme.AppType
 import com.smartledger.ui.theme.SmartLedgerColors
-import com.smartledger.util.CurrencyUtil
-import com.smartledger.util.DateUtil
 
+/**
+ * 统计页。
+ *
+ * 结构：页面标题 → 周期切换 → **AI 消费体检卡** → 环形图 → 分类排行。
+ *
+ * AI 卡放在周期切换之后、图表之前：它是这一页信息密度最高、
+ * 也最需要用户主动触发的部分，放在顶部才符合「✨ 本月 AI 消费体检」的定位。
+ * 但它**不跟随**日/周/月/年 Tab —— 「日」维度得不出消费画像，
+ * 「年」又会把 Prompt 撑得很大，所以 AI 卡自带「本月 / 近 3 月」二选一。
+ */
 @Composable
-fun StatisticsScreen(viewModel: StatisticsViewModel = viewModel()) {
+fun StatisticsScreen(
+    onNavigateToAiSettings: () -> Unit = {},
+    viewModel: StatisticsViewModel = viewModel()
+) {
     val selectedPeriod by viewModel.selectedPeriod.collectAsState(initial = "month")
     val periodExpense by viewModel.periodExpense.collectAsState(initial = 0.0)
     val periodIncome by viewModel.periodIncome.collectAsState(initial = 0.0)
     val expenseByCategory by viewModel.expenseByCategory.collectAsState(initial = emptyList())
     val categories by viewModel.categories.collectAsState(initial = emptyList())
 
+    val aiState by viewModel.aiState.collectAsState()
+    val aiPeriod by viewModel.aiPeriod.collectAsState()
+    val reportExpanded by viewModel.reportExpanded.collectAsState()
+    val adoptPrompt by viewModel.adoptPrompt.collectAsState()
+
+    val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // 回到前台时刷新「日/周」等相对今天的区间，并重估 AI 卡的缓存新鲜度
     DisposableEffect(lifecycleOwner) {
         val observer = object : androidx.lifecycle.DefaultLifecycleObserver {
             override fun onResume(owner: androidx.lifecycle.LifecycleOwner) {
@@ -52,11 +94,8 @@ fun StatisticsScreen(viewModel: StatisticsViewModel = viewModel()) {
     }
 
     val categoryMap = categories.associateBy { it.id }
-
-    // 灰度图表色系
     val chartColors = SmartLedgerColors.chartColors
 
-    // 周期标签映射
     val periodLabel = when (selectedPeriod) {
         "day" -> "今日支出"
         "week" -> "本周支出"
@@ -64,119 +103,138 @@ fun StatisticsScreen(viewModel: StatisticsViewModel = viewModel()) {
         else -> "本月支出"
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
+    // eyebrow 用纯英文，不做中英混拼（"本月EXPENSE" 这种很难看）
+    val periodEyebrow = when (selectedPeriod) {
+        "day" -> "TODAY"
+        "week" -> "THIS WEEK"
+        "year" -> "THIS YEAR"
+        else -> "THIS MONTH"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SmartLedgerColors.bg)
+    ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp)
+            contentPadding = PaddingValues(
+                start = UiTokens.pagePadding,
+                end = UiTokens.pagePadding,
+                top = AppSpacing.lg,
+                bottom = 96.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(UiTokens.cardGap)
         ) {
-            item { Spacer(modifier = Modifier.height(16.dp)) }
-
-            // ═══ 周期切换 ═══
+            // ═══ 页面标题 ═══
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    listOf("日" to "day", "周" to "week", "月" to "month", "年" to "year").forEach { (label, value) ->
-                        PeriodTab(
-                            text = label,
-                            selected = selectedPeriod == value,
-                            onClick = { viewModel.setPeriod(value) }
-                        )
-                        if (value != "year") Spacer(modifier = Modifier.width(32.dp))
-                    }
+                Column {
+                    Eyebrow(text = "STATISTICS")
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "统计",
+                        style = AppType.pageTitle,
+                        color = SmartLedgerColors.fg
+                    )
                 }
             }
 
-            item { Spacer(modifier = Modifier.height(32.dp)) }
+            // ═══ 周期切换 ═══
+            item {
+                SegmentedTabs(
+                    items = listOf(
+                        "日" to "day", "周" to "week", "月" to "month", "年" to "year"
+                    ),
+                    selected = selectedPeriod,
+                    onSelect = viewModel::setPeriod
+                )
+            }
+
+            // ═══ ✨ AI 消费体检 ═══
+            item {
+                AiReportCard(
+                    state = aiState,
+                    period = aiPeriod,
+                    expanded = reportExpanded,
+                    adoptPrompt = adoptPrompt,
+                    onPeriodChange = viewModel::setAiPeriod,
+                    onGenerate = { viewModel.generateReport(force = false) },
+                    onRegenerate = { viewModel.generateReport(force = true) },
+                    onViewCached = viewModel::viewCachedReport,
+                    onStop = viewModel::stopGeneration,
+                    onRetry = viewModel::retry,
+                    onDismissReport = viewModel::dismissReport,
+                    onToggleExpanded = viewModel::toggleReportExpanded,
+                    onOpenAdopt = viewModel::openAdoptPrompt,
+                    onDismissAdopt = viewModel::dismissAdoptPrompt,
+                    onAdoptConfirm = { amount, suggested, done ->
+                        viewModel.adoptSuggestedBudget(amount, suggested) { msg ->
+                            done(msg)
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onNavigateToAiSettings = onNavigateToAiSettings
+                )
+            }
 
             // ═══ 环形图 + 总支出 ═══
             item {
-                DonutChartSection(
+                DonutSection(
                     periodExpense = periodExpense,
+                    periodIncome = periodIncome,
                     periodLabel = periodLabel,
+                    periodEyebrow = periodEyebrow,
                     expenseByCategory = expenseByCategory,
                     categoryMap = categoryMap,
                     chartColors = chartColors
                 )
             }
 
-            item { Spacer(modifier = Modifier.height(32.dp)) }
-
-            // ═══ 分类排行标题 ═══
+            // ═══ 分类排行 ═══
             item {
-                Text(
-                    text = "分类排行",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = SmartLedgerColors.fg,
-                    modifier = Modifier.padding(horizontal = 20.dp)
+                SectionHeader(
+                    eyebrow = "CATEGORY RANKING",
+                    title = "分类排行",
+                    trailing = {
+                        if (expenseByCategory.isNotEmpty()) {
+                            AuxText(
+                                text = "${expenseByCategory.size} 类",
+                                color = SmartLedgerColors.fgTertiary
+                            )
+                        }
+                    }
                 )
             }
 
-            item { Spacer(modifier = Modifier.height(16.dp)) }
-
-            // ═══ 分类排行列表 ═══
             if (expenseByCategory.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "暂无数据",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SmartLedgerColors.fgSecondary
-                        )
-                    }
+                    EmptyState(
+                        title = "暂无支出数据",
+                        description = "记一笔账后，这里会显示分类占比与排行",
+                        icon = Icons.Outlined.PieChart
+                    )
                 }
             } else {
-                items(expenseByCategory.take(8).mapIndexed { index, ct ->
-                    Triple(ct, categoryMap[ct.categoryId], index)
-                }) { (categoryTotal, category, index) ->
-                    CategoryRankingItem(
-                        categoryTotal = categoryTotal,
-                        categoryName = category?.name ?: "未分类",
-                        categoryColor = chartColors[index % chartColors.size],
-                        totalExpense = periodExpense,
-                        maxExpense = expenseByCategory.firstOrNull()?.total ?: 1.0
-                    )
+                item {
+                    SectionCard(contentPadding = PaddingValues(vertical = AppSpacing.sm)) {
+                        val maxExpense = expenseByCategory.firstOrNull()?.total ?: 1.0
+                        expenseByCategory.take(8).forEachIndexed { index, ct ->
+                            if (index > 0) {
+                                Spacer(Modifier.height(AppSpacing.sm))
+                            }
+                            CategoryRankingRow(
+                                categoryTotal = ct,
+                                categoryName = categoryMap[ct.categoryId]?.name ?: "未分类",
+                                color = chartColors[index % chartColors.size],
+                                totalExpense = periodExpense,
+                                maxExpense = maxExpense
+                            )
+                        }
+                    }
                 }
             }
 
-            item { Spacer(modifier = Modifier.height(16.dp)) }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════
-// 周期切换标签
-// ═══════════════════════════════════════════════════════
-
-@Composable
-private fun PeriodTab(text: String, selected: Boolean, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable(onClick = onClick)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) SmartLedgerColors.fg else SmartLedgerColors.fgSecondary
-        )
-        if (selected) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .width(20.dp)
-                    .height(2.dp)
-                    .background(SmartLedgerColors.fg, RoundedCornerShape(1.dp))
-            )
+            item { Spacer(Modifier.height(AppSpacing.lg)) }
         }
     }
 }
@@ -185,204 +243,195 @@ private fun PeriodTab(text: String, selected: Boolean, onClick: () -> Unit) {
 // 环形图区域
 // ═══════════════════════════════════════════════════════
 
+/**
+ * 细环形进度 + 中心总额 + 图例。
+ *
+ * 二维、平面、低饱和：线宽细、无立体、无渐变、端点不做圆角
+ * （圆角端点会让相邻扇区视觉上互相渗透，读数不准）。
+ */
 @Composable
-private fun DonutChartSection(
+private fun DonutSection(
     periodExpense: Double,
+    periodIncome: Double,
     periodLabel: String,
+    periodEyebrow: String,
     expenseByCategory: List<CategoryTotal>,
     categoryMap: Map<Long, Category>,
     chartColors: List<Color>
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            modifier = Modifier.size(180.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            // 捕获颜色值（Canvas 内不能调用 @Composable）
-            val borderColor = SmartLedgerColors.border
+    SectionCard(large = true) {
+        Eyebrow(text = periodEyebrow)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = periodLabel,
+            style = AppType.listPrimary,
+            color = SmartLedgerColors.fg
+        )
+        Spacer(Modifier.height(AppSpacing.md))
 
-            // 环形图
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val strokeWidth = 24.dp.toPx()
-                val radius = (size.minDimension - strokeWidth) / 2
-                val center = Offset(size.width / 2, size.height / 2)
-                val rect = Size(radius * 2, radius * 2)
-                val topLeft = Offset(center.x - radius, center.y - radius)
-
-                var startAngle = -90f
-                val total = expenseByCategory.sumOf { it.total }.toFloat()
-
-                if (total > 0) {
-                    expenseByCategory.take(6).forEachIndexed { index, ct ->
-                        val sweep = (ct.total.toFloat() / total) * 360f
-                        drawArc(
-                            color = chartColors[index % chartColors.size],
-                            startAngle = startAngle,
-                            sweepAngle = sweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = rect,
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ThinDonut(
+                segments = expenseByCategory.take(8).map { it.total.toFloat() }
+                    .zip(chartColors),
+                modifier = Modifier.size(140.dp),
+                strokeWidth = 10.dp,
+                center = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = formatMoney(periodExpense),
+                            style = AppType.cardNumber,
+                            color = SmartLedgerColors.expense,
+                            maxLines = 1
                         )
-                        startAngle += sweep
+                        AuxText(
+                            text = "支出",
+                            color = SmartLedgerColors.fgTertiary
+                        )
                     }
-                } else {
-                    drawArc(
-                        color = borderColor,
-                        startAngle = 0f,
-                        sweepAngle = 360f,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = rect,
-                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                    )
                 }
-            }
+            )
 
-            // 中心文字
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = periodLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = SmartLedgerColors.fgSecondary
+            Spacer(Modifier.width(AppSpacing.lg))
+
+            Column(modifier = Modifier.weight(1f)) {
+                MetricLine("收入", formatMoney(periodIncome), SmartLedgerColors.income)
+                Spacer(Modifier.height(AppSpacing.sm))
+                MetricLine(
+                    "结余",
+                    formatMoney(periodIncome - periodExpense),
+                    if (periodIncome - periodExpense >= 0) SmartLedgerColors.income
+                    else SmartLedgerColors.expense
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "¥${CurrencyUtil.format(periodExpense)}",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 24.sp
-                    ),
-                    color = SmartLedgerColors.fg
-                )
+                if (expenseByCategory.isNotEmpty()) {
+                    Spacer(Modifier.height(AppSpacing.md))
+                    // 只列前 4 项，其余归入「其他」，避免图例挤爆卡片
+                    expenseByCategory.take(4).forEachIndexed { i, ct ->
+                        LegendRow(
+                            color = chartColors[i % chartColors.size],
+                            name = categoryMap[ct.categoryId]?.name ?: "未分类",
+                            percent = if (periodExpense > 0) ct.total / periodExpense * 100 else 0.0
+                        )
+                    }
+                    if (expenseByCategory.size > 4) {
+                        val restTotal = expenseByCategory.drop(4).sumOf { it.total }
+                        LegendRow(
+                            color = chartColors[4 % chartColors.size],
+                            name = "其他 ${expenseByCategory.size - 4} 类",
+                            percent = if (periodExpense > 0) restTotal / periodExpense * 100 else 0.0
+                        )
+                    }
+                }
             }
         }
     }
 }
 
+@Composable
+private fun MetricLine(label: String, value: String, color: Color) {
+    Column {
+        Eyebrow(text = label)
+        Text(
+            text = value,
+            style = AppType.cardNumberSmall,
+            color = color,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun LegendRow(color: Color, name: String, percent: Double) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(color)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = name,
+            style = AppType.aux,
+            color = SmartLedgerColors.fgSecondary,
+            maxLines = 1,
+            modifier = Modifier.weight(1f)
+        )
+        AuxText(text = formatPercent(percent), color = SmartLedgerColors.fgTertiary)
+    }
+}
+
 // ═══════════════════════════════════════════════════════
-// 分类排行项
+// 分类排行行（横向条形图）
 // ═══════════════════════════════════════════════════════
 
 @Composable
-private fun CategoryRankingItem(
+private fun CategoryRankingRow(
     categoryTotal: CategoryTotal,
     categoryName: String,
-    categoryColor: Color,
+    color: Color,
     totalExpense: Double,
     maxExpense: Double
 ) {
-    val percentage = if (totalExpense > 0) (categoryTotal.total / totalExpense * 100) else 0.0
-    val barWidth = if (maxExpense > 0) (categoryTotal.total / maxExpense).toFloat() else 0f
+    val percentage = if (totalExpense > 0) categoryTotal.total / totalExpense * 100 else 0.0
+    val fraction = if (maxExpense > 0) (categoryTotal.total / maxExpense).toFloat() else 0f
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 图标
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .background(SmartLedgerColors.surfaceHover, RoundedCornerShape(10.dp)),
+                .size(34.dp)
+                .clip(RoundedCornerShape(AppRadius.small))
+                .background(SmartLedgerColors.surfaceHover),
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                getCategoryIcon(categoryName),
+                categoryIcon(categoryName),
                 contentDescription = categoryName,
-                tint = categoryColor,
-                modifier = Modifier.size(20.dp)
+                tint = color,
+                modifier = Modifier.size(18.dp)
             )
         }
 
-        Spacer(modifier = Modifier.width(14.dp))
+        Spacer(Modifier.width(AppSpacing.md))
 
-        // 名称 + 进度条
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = categoryName,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = SmartLedgerColors.fg
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .background(SmartLedgerColors.surfaceHover, RoundedCornerShape(2.dp))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(fraction = barWidth.coerceIn(0f, 1f))
-                        .height(4.dp)
-                        .background(categoryColor, RoundedCornerShape(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = categoryName,
+                    style = AppType.listPrimary,
+                    color = SmartLedgerColors.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = formatMoney(categoryTotal.total),
+                    style = AppType.listAmount,
+                    color = SmartLedgerColors.fg,
+                    maxLines = 1
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.width(16.dp))
-
-        // 金额 + 百分比
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = "¥${CurrencyUtil.format(categoryTotal.total)}",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = FontFamily.Monospace
-                ),
-                fontWeight = FontWeight.SemiBold,
-                color = SmartLedgerColors.fg
+            Spacer(Modifier.height(6.dp))
+            ThinProgressBar(
+                progress = fraction.coerceIn(0f, 1f),
+                color = color,
+                thickness = 4.dp
             )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "${percentage.toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = SmartLedgerColors.fgSecondary
-            )
+            Spacer(Modifier.height(4.dp))
+            AuxText(text = formatPercent(percentage), color = SmartLedgerColors.fgTertiary)
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════
-// 分类图标映射
-// ═══════════════════════════════════════════════════════
-
-private fun getCategoryIcon(name: String): ImageVector {
-    return when (name) {
-        "餐饮" -> Icons.Outlined.Restaurant
-        "交通" -> Icons.Outlined.DirectionsBus
-        "购物" -> Icons.Outlined.ShoppingBag
-        "娱乐" -> Icons.Outlined.OndemandVideo
-        "居住" -> Icons.Outlined.Home
-        "医疗" -> Icons.Outlined.FavoriteBorder
-        "教育" -> Icons.Outlined.MenuBook
-        "通讯" -> Icons.Outlined.Phone
-        "日用" -> Icons.Outlined.ShoppingCart
-        "工资" -> Icons.Outlined.AttachMoney
-        "理财" -> Icons.Outlined.TrendingUp
-        "红包" -> Icons.Outlined.CardGiftcard
-        "转账" -> Icons.Outlined.SwapHoriz
-        else -> Icons.Outlined.MoreHoriz
-    }
-}
-
-// ═══════════════════════════════════════════════════════
-// Preview
-// ═══════════════════════════════════════════════════════
-
-@androidx.compose.ui.tooling.preview.Preview(
-    showBackground = true,
-    widthDp = 393,
-    heightDp = 852,
-    name = "StatisticsScreen"
-)
+@androidx.compose.ui.tooling.preview.Preview(showBackground = true, widthDp = 393, heightDp = 852)
 @Composable
 private fun StatisticsScreenPreview() {
     com.smartledger.ui.theme.SmartLedgerTheme {

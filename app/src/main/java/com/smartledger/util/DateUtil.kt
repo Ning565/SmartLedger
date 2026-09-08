@@ -3,38 +3,57 @@ package com.smartledger.util
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * 日期格式化 / 解析工具。
+ *
+ * ## 线程安全
+ * `SimpleDateFormat` **不是线程安全**的：多个线程共用同一个实例并发 format/parse，
+ * 会读到错乱的结果甚至抛异常。本项目里 DateUtil 同时被以下并发路径调用：
+ *  - UI 层多个 ViewModel 的 Flow（主线程 / 默认调度器）；
+ *  - 本次二开新增的 AI 聚合链路（`Dispatchers.IO`）；
+ *  - 自动记账主链路的时间计算。
+ *
+ * 因此这里用 `ThreadLocal` 让每个线程各持一份 formatter：既保持了「复用实例、
+ * 不每次 new」的性能，又彻底消除并发错乱。输出格式与口径与改造前**完全一致**。
+ *
+ * 用 [fmt] 扩展取值而不是直接 `get()`：JDK 的 `ThreadLocal.get()` 返回被标注为可空，
+ * 而 `withInitial` 已保证初始值非空，`!!` 在此是安全断言，可避免每个调用点都出可空告警。
+ */
 object DateUtil {
 
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
-    private val dateTimeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
-    private val monthFormat = SimpleDateFormat("yyyy-MM", Locale.CHINA)
-    private val dayFormat = SimpleDateFormat("MM-dd", Locale.CHINA)
-    private val timeFormat = SimpleDateFormat("HH:mm", Locale.CHINA)
+    private val dateFormat = ThreadLocal.withInitial { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA) }
+    private val dateTimeFormat = ThreadLocal.withInitial { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA) }
+    private val monthFormat = ThreadLocal.withInitial { SimpleDateFormat("yyyy-MM", Locale.CHINA) }
+    private val dayFormat = ThreadLocal.withInitial { SimpleDateFormat("MM-dd", Locale.CHINA) }
+    private val timeFormat = ThreadLocal.withInitial { SimpleDateFormat("HH:mm", Locale.CHINA) }
 
-    fun formatDate(timestamp: Long): String = dateFormat.format(Date(timestamp))
+    /** 取当前线程的 formatter；withInitial 保证非空，故 `!!` 安全。 */
+    private val ThreadLocal<SimpleDateFormat>.fmt: SimpleDateFormat get() = get()!!
 
-    fun formatDateTime(timestamp: Long): String = dateTimeFormat.format(Date(timestamp))
+    fun formatDate(timestamp: Long): String = dateFormat.fmt.format(Date(timestamp))
 
-    fun formatMonth(timestamp: Long): String = monthFormat.format(Date(timestamp))
+    fun formatDateTime(timestamp: Long): String = dateTimeFormat.fmt.format(Date(timestamp))
 
-    fun formatDay(timestamp: Long): String = dayFormat.format(Date(timestamp))
+    fun formatMonth(timestamp: Long): String = monthFormat.fmt.format(Date(timestamp))
 
-    fun formatTime(timestamp: Long): String = timeFormat.format(Date(timestamp))
+    fun formatDay(timestamp: Long): String = dayFormat.fmt.format(Date(timestamp))
 
-    fun getCurrentYearMonth(): String = monthFormat.format(Date())
+    fun formatTime(timestamp: Long): String = timeFormat.fmt.format(Date(timestamp))
+
+    fun getCurrentYearMonth(): String = monthFormat.fmt.format(Date())
 
     /** 月份加减，如 "2026-08" + (-1) → "2026-07" */
     fun shiftYearMonth(yearMonth: String, deltaMonths: Int): String {
         val cal = Calendar.getInstance()
-        val date = monthFormat.parse(yearMonth) ?: return yearMonth
+        val date = monthFormat.fmt.parse(yearMonth) ?: return yearMonth
         cal.time = date
         cal.add(Calendar.MONTH, deltaMonths)
-        return monthFormat.format(cal.time)
+        return monthFormat.fmt.format(cal.time)
     }
 
     fun getMonthStartTime(yearMonth: String): Long {
         val cal = Calendar.getInstance()
-        val date = monthFormat.parse(yearMonth)!!
+        val date = monthFormat.fmt.parse(yearMonth)!!
         cal.time = date
         cal.set(Calendar.DAY_OF_MONTH, 1)
         cal.set(Calendar.HOUR_OF_DAY, 0)
@@ -46,7 +65,7 @@ object DateUtil {
 
     fun getMonthEndTime(yearMonth: String): Long {
         val cal = Calendar.getInstance()
-        val date = monthFormat.parse(yearMonth)!!
+        val date = monthFormat.fmt.parse(yearMonth)!!
         cal.time = date
         cal.set(Calendar.DAY_OF_MONTH, cal.getActualMaximum(Calendar.DAY_OF_MONTH))
         cal.set(Calendar.HOUR_OF_DAY, 23)

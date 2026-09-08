@@ -23,9 +23,28 @@
     <!-- 应用内下载后安装更新包 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!--
+      语音记账使用系统语音识别 Intent（ACTION_RECOGNIZE_SPEECH），
+      因此**不需要 RECORD_AUDIO 权限** —— 录音由系统语音应用完成，
+      SmartLedger 全程拿不到音频，只接收返回的文字。
+
+      但 Android 11+ 有包可见性限制：不声明 <queries> 时
+      queryIntentActivities() 会返回空，导致麦克风按钮被误判为「设备不支持」而隐藏。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".SmartLedgerApp"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

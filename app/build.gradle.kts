@@ -58,6 +58,54 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        unitTests {
+            // 单测里用到 SharedPreferences 等 Android API 时返回默认值而不是抛异常，
+            // 避免为了跑纯逻辑测试而引入 Robolectric。
+            isReturnDefaultValues = true
+            isIncludeAndroidResources = false
+        }
+    }
+}
+
+// 导出 Room schema JSON，用于人工校验手写 Migration 与 Room 期望的表结构
+// 是否逐列一致（列名 / 类型 / NOT NULL / DEFAULT / 索引名）。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+// ═══ AI 真链路集成测试 ═══
+//
+// 默认**排除**：这类测试会真的请求 DeepSeek，消耗用户额度，
+// 不能在每次 ./gradlew test 时静默跑掉。
+// 需要时显式开启：
+//   ./gradlew testDebugUnitTest -PaiIntegration=true
+//
+// API Key 从 local.properties 读（已在 .gitignore 中），
+// **不写进任何会进版本库的文件**。缺失时测试用 Assume 自动跳过。
+val aiIntegrationEnabled =
+    (project.findProperty("aiIntegration") as? String)?.toBoolean() ?: false
+
+val aiTestProps = run {
+    // 注意：在 Gradle Kotlin DSL 里不能写 `java.util.Properties()` ——
+    // `java` 会被解析成 project 的 JavaPluginExtension 而不是包名。
+    // 文件顶部已经 `import java.util.Properties`，直接用类名即可。
+    val p = Properties()
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { p.load(it) }
+    p
+}
+
+tasks.withType<Test>().configureEach {
+    if (!aiIntegrationEnabled) {
+        exclude("**/DeepSeekIntegrationTest.class")
+    }
+    systemProperty("ai.api.key", aiTestProps.getProperty("deepseek.api.key", ""))
+    systemProperty("ai.base.url", aiTestProps.getProperty("deepseek.base.url", ""))
+    systemProperty("ai.model", aiTestProps.getProperty("deepseek.model", ""))
+    // 真链路测试比普通单测慢，适当放宽超时
+    systemProperty("ai.timeout.ms", aiTestProps.getProperty("deepseek.timeout.ms", "90000"))
 }
 
 dependencies {
@@ -94,4 +142,13 @@ dependencies {
 
     // Debug
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    // ═══ 单元测试 ═══
+    // 只加这两个，不引入 MockWebServer / Robolectric：
+    // 被测逻辑一律设计成不依赖 Android 框架的纯函数，
+    // HTTP 层通过 HttpEngine 接口注入 Fake 实现来测。
+    testImplementation("junit:junit:4.13.2")
+    // android.jar 里的 org.json 是运行期抛 "Stub!" 的桩，
+    // 单测需要真实实现；放在 testImplementation 会优先于 mockable android.jar。
+    testImplementation("org.json:json:20240303")
 }
