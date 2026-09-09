@@ -15,8 +15,10 @@ android {
         applicationId = "com.smartledger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 29
-        versionName = "1.0.28"
+        // 1.1.0：AI 财务顾问 / 自然语言与语音记账 / 动态预算 / UI 重构（次版本号升级）
+        // 应用内更新靠 GitHub Release 的 tag 与 versionName 比对，发版时 tag 请用 v1.1.0
+        versionCode = 30
+        versionName = "1.1.0"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══

@@ -1,11 +1,22 @@
 # SmartLedger 智能记账
 
-[![Latest Release](https://img.shields.io/github/v/release/huanghhcri/SmartLedger?label=release)](https://github.com/huanghhcri/SmartLedger/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/Ning565/SmartLedger?label=release)](https://github.com/Ning565/SmartLedger/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green.svg)](https://github.com/huanghhcri/SmartLedger)
+[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green.svg)](https://github.com/Ning565/SmartLedger)
 
 一款 Android 本地智能记账应用：监听支付类通知自动入账，也支持手动记账、预算、统计与数据备份。  
-当前版本：**v1.0.24**
+当前版本：**v1.1.0**
+
+> ### 📌 关于本仓库
+>
+> 本项目是 **[huanghhcri/SmartLedger](https://github.com/huanghhcri/SmartLedger) 的二次开发版本**。
+> 自动记账主链路、通知解析、备份恢复、应用内更新等**全部基础能力均来自原作者的工作**，
+> 在此基础上本仓库新增了 **AI 财务顾问、自然语言 / 语音快捷记账、动态预算与超支预测**，
+> 并重构了整体 UI 设计系统。详见下方「本次二开新增」与 [变更实现说明](SmartLedger_本次变更实现说明.md)。
+>
+> **请注意**：本仓库使用独立签名，与原仓库发布的版本**不能相互覆盖安装**；
+> 应用内「检查更新」指向的是**本仓库**的 Releases。若你此前安装的是原作者版本，
+> 需先卸载再安装本版本（卸载会清空本地账单，请先用「备份」导出 CSV）。
 
 ## ✨ 功能特点
 
@@ -22,7 +33,8 @@
 ### ✍️ 手动记账
 - 支出 / 收入切换、数字键盘、分类网格
 - **渠道可选**：微信、支付宝、云闪付、现金、银行卡、抖音、京东，或自定义
-- 编辑账单时可改金额、商户、备注、**渠道**与分类
+- **日期可选**（本次新增）：支持补记今天 / 昨天 / 前天或任意历史日期，保留当前时分
+- 编辑账单时可改金额、商户、备注、**渠道**、分类与**日期时刻**
 
 ### 📊 首页与统计
 - **总余额**：期初 + 全部收入 − 全部支出，可点按设置期初
@@ -33,11 +45,36 @@
 ### 💰 预算管理
 - 月度总预算、分类预算
 - 使用进度展示
+- **动态预算与超支预测**（本次新增）：今日建议可用额度、月末支出预测、
+  预计触达上限的日期、已超支警示；历史月份显示执行情况。**纯本地计算，离线可用**
 
 ### 🎨 外观与个人
 - 浅色 / 深色 / 跟随系统
 - 自定义昵称、陪伴天数
 - 设置内反馈建议入口
+- **全新「学术纸张」设计系统**（本次重构）：暖纸底色 + 细边框 + 大留白，
+  统一组件库与语义排版，等宽数字避免金额抖动，完整适配深色模式
+
+### ✨ AI 财务顾问（本次新增，默认关闭）
+
+> **完全可选**。不填 API Key 时，上述所有记账 / 统计 / 预算功能与以前完全一致，全程离线。
+
+**① AI 消费体检**（统计页）
+- 基于**本地统计**生成「本月 / 近 3 月」消费诊断：消费结构、行为习惯画像、超支预警、行动建议
+- 流式输出 + Markdown 渲染，可随时停止；报告本地缓存（相同数据 6 小时内不重复请求）
+- 可提取「建议可用总额度」，**经你二次确认（可改金额）后**才写入下月预算
+
+**② 自然语言 / 语音快捷记账**（记账页）
+- 说一句或输一句「昨天老乡鸡 32 元微信」，AI 自动回填金额 / 分类 / 商户 / 渠道 / 日期
+- 语音走**系统识别面板**，**不需麦克风权限**；不支持的设备自动隐藏入口
+- AI **只回填表单、绝不直接入账**，必须你确认后点「记一笔」才保存；解析失败不会清空你已填内容
+
+**隐私与安全**
+- 设备**直连你自己配置的服务商**，本项目无中转服务器、不收集任何数据
+- 仅上传聚合后的统计数字；**商户名已匿名化为编号**（如「餐饮商户 #1」），不上传原始通知全文、
+  卡号、手机号、订单号、真实商户名与备注原文
+- API Key 经 AndroidKeyStore 加密仅存本机，不写入日志，且已从系统自动备份与换机迁移中排除
+- AI 生成内容仅供参考，不构成投资建议；支持 DeepSeek / Kimi / 通义千问 / OpenAI 及任意 OpenAI 兼容接口
 
 ### 🔄 更新与数据
 - **应用内检查更新**：启动自动检测 + 设置页手动检测
@@ -47,11 +84,11 @@
 
 ## 📸 界面预览
 
-应用采用偏 Linear 的克制风格；支持浅色与深色主题。
+应用采用「学术纸张」设计语言（暖纸底、细边框、克制语义色）；支持浅色与深色主题。
 
-| 首页 | 记账 | 统计 | 我的 |
+| 总览 | 流水 | 统计 | 记账 |
 |------|------|------|------|
-| ![](screenshots/home.png) | ![](screenshots/record.png) | ![](screenshots/statistics.png) | ![](screenshots/profile.png) |
+| ![](screenshots/home.png) | ![](screenshots/transactions.png) | ![](screenshots/statistics.png) | ![](screenshots/record.png) |
 
 > 若仓库中暂无截图，可本地运行后自行补充到 `screenshots/` 目录。
 
@@ -59,21 +96,29 @@
 
 ### 方式一：下载 APK（推荐）
 
-1. 打开 [Releases](https://github.com/huanghhcri/SmartLedger/releases/latest)
+1. 打开 [Releases](https://github.com/Ning565/SmartLedger/releases/latest)
 2. 下载最新 `*.apk`（需挂在对应 Release 附件中）
 3. 手机安装时允许「安装未知应用」
 
-已安装旧版时，也可在 App 内「检查更新」或等待启动自动提示后应用内下载安装。
+已安装**本仓库**旧版时，也可在 App 内「检查更新」或等待启动自动提示后应用内下载安装。
+
+> ⚠️ 若你装的是原作者 [huanghhcri/SmartLedger](https://github.com/huanghhcri/SmartLedger) 发布的版本，
+> 因签名不同无法直接覆盖安装，需先备份数据再卸载重装。
 
 ### 方式二：自行编译
 
 ```bash
-git clone https://github.com/huanghhcri/SmartLedger.git
+git clone https://github.com/Ning565/SmartLedger.git
 cd SmartLedger
 ```
 
 用 Android Studio 打开工程，连接真机或模拟器后 Run。  
-Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
+仅想试用可直接打 debug 包（无需签名密钥）：`./gradlew assembleDebug`，
+产物在 `app/build/outputs/apk/debug/app-debug.apk`。
+
+Release 签名从 `local.properties` 读取（勿提交密钥到仓库），需要四个键：
+`KEY_STORE_PATH` / `KEY_STORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`，
+然后执行 `./gradlew assembleRelease`。
 
 ## 📋 系统要求
 
@@ -88,6 +133,10 @@ Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
 | 悬浮窗 | 不确定账单的确认弹窗 | 推荐 |
 | 安装未知应用 | 应用内下载更新后安装 APK | 更新时需要 |
 | 存储 / 文件访问 | 导出 CSV、备份恢复 | 按需 |
+| 网络（INTERNET） | 检查更新；**仅在你主动使用 AI 功能时**才产生对外请求 | AI 功能需要 |
+
+> 本应用**不申请麦克风（RECORD_AUDIO）权限**：语音记账走系统语音识别面板，
+> 录音由系统语音应用完成，本应用只拿到识别后的文字。
 
 > 重新安装或覆盖安装后，系统常会撤销通知监听权限；打开 App 会检测并引导重新开启。
 
@@ -130,11 +179,14 @@ Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
 | 项 | 技术 |
 |----|------|
 | 语言 | Kotlin |
-| UI | Jetpack Compose + Material 3 |
+| UI | Jetpack Compose + Material 3（自建「学术纸张」设计系统与组件库） |
 | 数据库 | Room（SQLite） |
 | 架构 | MVVM + Repository |
 | 异步 | Coroutines + Flow |
 | 更新 | GitHub Releases API + 应用内下载（HTTP Range 续传） |
+| AI | OpenAI Compatible Chat Completions（SSE 流式），基于 `HttpURLConnection` + `org.json` 实现，**零新增运行时依赖** |
+| 密钥存储 | AndroidKeyStore AES/GCM |
+| 测试 | 325 个纯 JVM 单测（JUnit 4）+ DeepSeek 真链路集成测试（默认排除） |
 
 ## ⚠️ 已知问题与建议
 
@@ -155,8 +207,23 @@ Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
 
 ## 📝 近期更新（摘要）
 
-详见 [Releases](https://github.com/huanghhcri/SmartLedger/releases)。
+详见 [Releases](https://github.com/Ning565/SmartLedger/releases)。
 
+### 本仓库（二次开发）
+
+- **v1.1.0**（本次）：
+  - 新增 **AI 消费体检**（统计页，流式报告 + 本地缓存 + Markdown 渲染）
+  - 新增 **自然语言 / 语音快捷记账**（记账页，免麦克风权限）
+  - 新增 **动态预算与超支预测**（首页预算卡，纯本地离线计算）
+  - 记账页支持**选择日期**（可补记历史账单），账单编辑可改时刻
+  - **UI 全面重构**：新增设计系统与 24 个复用组件，修复深色模式文字不可读
+  - 底部导航改为 **总览 / 流水 / 统计 / 设置**，新增独立流水页
+  - 隐私政策补充 AI 章节；AI 配置排除自动备份与换机迁移
+  - Room 1→2 迁移（仅做加法，不重建表，保障存量账单零丢失）
+
+### 原仓库（v1.0.28 及之前，来自原作者）
+
+- **v1.0.28**：修复工行工资等带千分位逗号的收入漏记  
 - **v1.0.24**：启动自动检查更新；下载断点续传；手动记账 / 编辑可选渠道  
 - **v1.0.21**：修复聚合通知漏记（微信付款码及全渠道）  
 - **v1.0.20**：首页总余额与期初设置  
@@ -180,10 +247,17 @@ Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
 
 ## 🙏 致谢
 
+- **[huanghhcri/SmartLedger](https://github.com/huanghhcri/SmartLedger)** ——
+  **本项目的基础**。自动记账主链路（通知监听与解析、聚合通知补全、防误记、智能去重、
+  模糊账单确认、短信兜底、监听保活与自动重绑）、CSV 导出与备份恢复、应用内更新等
+  全部核心能力均由原作者实现。本仓库在其基础上做二次开发，遵循原项目的 MIT 许可证。
 - [Jetpack Compose](https://developer.android.com/jetpack/compose)
 - [Material 3](https://m3.material.io/)
 - [Room](https://developer.android.com/training/data-storage/room)
 
 ---
 
-有问题或建议欢迎 [提交 Issue](https://github.com/huanghhcri/SmartLedger/issues)。
+有问题或建议欢迎 [提交 Issue](https://github.com/Ning565/SmartLedger/issues)。
+
+> 若问题出在**自动记账 / 通知解析**等原有能力上，也建议先到
+> [原作者仓库](https://github.com/huanghhcri/SmartLedger/issues) 确认是否已有相关讨论。

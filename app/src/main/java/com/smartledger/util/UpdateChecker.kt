@@ -21,7 +21,10 @@ import java.net.URL
 object UpdateChecker {
 
     private const val TAG = "UpdateChecker"
-    private const val REPO = "huanghhcri/SmartLedger"
+    // 指向本仓库（Ning565/SmartLedger）而不是原作者仓库：
+    // 应用内「检查更新」拉取的是这里的 Releases，写原作者仓库的话，
+    // 在本仓库发的新版本老用户永远收不到提示。
+    private const val REPO = "Ning565/SmartLedger"
     private const val API_URL = "https://api.github.com/repos/$REPO/releases/latest"
 
     data class UpdateInfo(
