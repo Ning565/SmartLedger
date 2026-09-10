@@ -101,6 +101,15 @@ object AccessibilityDiagnostics {
         pushRing("${alias(pkg)} 窗口不可用（页面切换间隙或系统限制） ${timeFmt.format(Date())}")
     }
 
+    /**
+     * 真机校准（9/10 debug.4）：完整扫描拿到**空节点树** ——
+     * rootInfo 区分「指错窗口」（root 是密码键盘等壳）与「自绘页面」
+     * （root 正常但无文本）；备选窗口数 > 0 时多窗口遍历已尝试。
+     */
+    fun onEmptyTree(pkg: String, rootInfo: String, altWindows: Int) {
+        pushRing("${alias(pkg)} 树为空 $rootInfo 备选窗口$altWindows ${timeFmt.format(Date())}")
+    }
+
     /** 诊断摘要文本（设置页弹窗展示） */
     fun buildSummary(context: Context): String {
         val counts = readCounts(context)

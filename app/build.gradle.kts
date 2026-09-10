@@ -17,7 +17,7 @@ android {
         targetSdk = 35
         // 1.1.0：AI 财务顾问 / 自然语言与语音记账 / 动态预算 / UI 重构（次版本号升级）
         // 应用内更新靠 GitHub Release 的 tag 与 versionName 比对，发版时 tag 请用 v1.1.0
-        versionCode = 31
+        versionCode = 32
         versionName = "1.1.0"
     }
 

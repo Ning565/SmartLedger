@@ -111,9 +111,15 @@ object UpdateChecker {
             }
 
             val remote = tagName.removePrefix("v")
+            // debug tag（如 v1.1.0-debug.3）的 prerelease 后缀会让 split(".")
+            // 多出一段数字（[1,1,0,3]），被 isNewerVersion 误判为更高版本 ——
+            // 已装同版本号的用户永远收到更新提示（debug.3 实测的烦人误报）。
+            // 剥掉 '-' 后缀再比较：debug 包之间不提示更新（手动下载），
+            // 正式版（v1.2.0）比较不受影响。
+            val remoteCore = remote.substringBefore('-')
             Log.d(TAG, "local=$local remote=$remote tag=$tagName")
 
-            if (isNewerVersion(local, remote)) {
+            if (isNewerVersion(local, remoteCore)) {
                 CheckResult.HasUpdate(
                     UpdateInfo(
                         versionName = tagName,

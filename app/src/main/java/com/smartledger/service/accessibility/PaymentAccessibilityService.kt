@@ -164,12 +164,29 @@ class PaymentAccessibilityService : AccessibilityService() {
             return
         }
         AccessibilityDiagnostics.onFullScan(packageName)
+
+        // 真机校准（9/10 debug.4）：微信「支付成功」页是独立 Window，
+        // rootInActiveWindow 不一定指向它（密码键盘残留/父窗口等）。
+        // 主线程先收集同包名的其它窗口 root，树为空时降级逐个尝试。
+        // windows 是 binder 调用，只在主线程取一次
+        val altRoots = collectAltWindowRoots(packageName, root)
         val debug = debugEnabled()
 
         scope.launch {
             try {
                 // C6：遍历与解析全部在 IO 线程
-                val snapshot = UiTreeSnapshotExtractor.extract(root, packageName)
+                var snapshot = UiTreeSnapshotExtractor.extract(root, packageName)
+
+                if (snapshot.nodes.isEmpty()) {
+                    AccessibilityDiagnostics.onEmptyTree(
+                        packageName, describeRoot(root), altRoots.size
+                    )
+                    for (altRoot in altRoots) {
+                        val alt = UiTreeSnapshotExtractor.extract(altRoot, packageName)
+                        if (alt.nodes.size > snapshot.nodes.size) snapshot = alt
+                    }
+                }
+
                 if (snapshot.nodes.isEmpty()) {
                     recordScanSample(debug, emptyList(), false)
                     return@launch
@@ -226,4 +243,24 @@ class PaymentAccessibilityService : AccessibilityService() {
         if (!enabled) return
         AccessibilityDiagnostics.onScanTexts(texts, signalHit)
     }
+
+    /**
+     * 同包名的其它窗口 root（真机校准 9/10 debug.4，主线程调用）。
+     * rootInActiveWindow 之外的微信/支付宝窗口 —— 支付成功页等
+     * Dialog/浮层窗口可能在列表里但不是「活动」窗口。
+     */
+    private fun collectAltWindowRoots(
+        packageName: String,
+        mainRoot: android.view.accessibility.AccessibilityNodeInfo
+    ): List<android.view.accessibility.AccessibilityNodeInfo> = try {
+        windows.orEmpty().mapNotNull { it.root }
+            .filter { it.packageName?.toString() == packageName && it != mainRoot }
+    } catch (e: Exception) {
+        Log.w(TAG, "collect windows failed", e)
+        emptyList()
+    }
+
+    /** 树为空时记录 root 的结构特征，用于区分「指错窗口」与「自绘页面」 */
+    private fun describeRoot(root: android.view.accessibility.AccessibilityNodeInfo): String =
+        "root=${root.className?.toString()?.substringAfterLast('.')} 子节点=${root.childCount}"
 }
