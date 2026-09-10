@@ -14,6 +14,10 @@ AOSP 的 AccessibilityServiceInfo 用 split("(\\s)*,(\\s)*") 解析且不 trim�
      值 == 代码常量 WECHAT_PACKAGE/ALIPAY_PACKAGE 的拼接（逐字符）
   2. packageNames 值不含任何空白字符
   3. accessibilityEventTypes 编译为 0x820（typeWindowStateChanged|typeWindowContentChanged）
+  4. accessibilityFlags 含 flagRetrieveInteractiveWindows / flagIncludeNotImportantViews
+     / flagReportViewIds —— 缺 flagRetrieveInteractiveWindows 时
+     AccessibilityService.getWindows() 返回空且不报错，「多窗口遍历」会静默空转
+     （debug.4 真机三场景全不记账的根因），属于同一类「配置与预期不一致」的坑
 
 用法：
   python3 tools/verify_a11y_config.py [apk路径]
@@ -31,6 +35,18 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WECHAT_PACKAGE = "com.tencent.mm"
 ALIPAY_PACKAGE = "com.eg.android.AlipayGphone"
 EXPECTED_PACKAGE_NAMES = f"{WECHAT_PACKAGE},{ALIPAY_PACKAGE}"
+
+# AOSP AccessibilityServiceInfo 的 flag 位（只校验「必须有」，不做全等 ——
+# 以后再加 flag 不该让这个脚本失败）
+FLAG_INCLUDE_NOT_IMPORTANT_VIEWS = 0x00000002
+FLAG_REPORT_VIEW_IDS = 0x00000010
+FLAG_RETRIEVE_INTERACTIVE_WINDOWS = 0x00000040
+
+REQUIRED_ACCESSIBILITY_FLAGS = {
+    "flagRetrieveInteractiveWindows": FLAG_RETRIEVE_INTERACTIVE_WINDOWS,
+    "flagIncludeNotImportantViews": FLAG_INCLUDE_NOT_IMPORTANT_VIEWS,
+    "flagReportViewIds": FLAG_REPORT_VIEW_IDS,
+}
 
 # 从源码常量再读一遍做交叉校验（防止脚本与代码各自漂移）
 SOURCE = os.path.join(
@@ -121,6 +137,25 @@ def extract_attribute(tree: str, attr_name: str):
     return m.group(2).strip() if m else None
 
 
+def parse_int(value):
+    """把 aapt2 输出的属性值解析成 int。
+
+    flag 类属性编译后是 int，aapt2 可能输出 `0x00000052` 或十进制；
+    字符串属性带引号，这里一律返回 None（调用方按「找不到」处理）。
+    """
+    if value is None:
+        return None
+    v = value.strip()
+    if not v or v.startswith('"'):
+        return None
+    for base in (0, 10):
+        try:
+            return int(v, base)
+        except ValueError:
+            continue
+    return None
+
+
 def main():
     print("═══ 无障碍配置编译产物校验（P0-1 防护）═══")
 
@@ -171,6 +206,26 @@ def main():
             ok(f"accessibilityEventTypes = {flags.strip()}（两种窗口事件）")
         else:
             fail(f"accessibilityEventTypes 异常：{flags}")
+
+    # ── 4. accessibilityFlags 位校验 ──
+    raw_flags = extract_attribute(tree, "accessibilityFlags")
+    value = parse_int(raw_flags)
+    if value is None:
+        fail(f"APK 中找不到 / 无法解析 accessibilityFlags（原值 <{raw_flags}>）")
+    else:
+        ok(f"accessibilityFlags 编译为 0x{value:08x}")
+        for name, bit in REQUIRED_ACCESSIBILITY_FLAGS.items():
+            if value & bit:
+                ok(f"  含 {name} (0x{bit:x})")
+            else:
+                fail(
+                    f"  缺 {name} (0x{bit:x})！"
+                    + (
+                        "（缺它时 getWindows() 返回空且不报错，多窗口遍历会静默空转）"
+                        if name == "flagRetrieveInteractiveWindows"
+                        else ""
+                    )
+                )
 
     print()
     if FAILURES:

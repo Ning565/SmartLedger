@@ -72,4 +72,32 @@ class PaymentSignalDetectorTest {
         val words = PaymentSignalDetector.strongWordsIn("支付成功，已收款 ¥500")
         assertEquals(listOf("支付成功", "已收款"), words)
     }
+
+    // ═══ 金额形态探测（诊断分项用，debug.4） ═══
+
+    @Test
+    fun `hasAmountForm 认三种金额形态`() {
+        assertTrue(PaymentSignalDetector.hasAmountForm("¥32.00"))
+        assertTrue(PaymentSignalDetector.hasAmountForm("500.00元"))
+        assertTrue(PaymentSignalDetector.hasAmountForm("红包 12.88"))
+    }
+
+    @Test
+    fun `hasAmountForm 对没有金额的文本为false`() {
+        assertFalse(PaymentSignalDetector.hasAmountForm("支付成功"))
+        assertFalse(PaymentSignalDetector.hasAmountForm(""))
+    }
+
+    @Test
+    fun `hasAmountForm 与 hasStrongSignal 口径一致 - 只有其一都不算强信号`() {
+        // 诊断里靠这两项分叉判断「词表漏词」还是「页面结构不对」
+        assertTrue(PaymentSignalDetector.hasStrongSignal("支付成功 ¥32.00"))
+        assertTrue(PaymentSignalDetector.hasAmountForm("支付成功 ¥32.00"))
+
+        assertFalse(PaymentSignalDetector.hasStrongSignal("¥32.00"))
+        assertTrue(PaymentSignalDetector.hasAmountForm("¥32.00"))
+
+        assertFalse(PaymentSignalDetector.hasStrongSignal("支付成功"))
+        assertFalse(PaymentSignalDetector.hasAmountForm("支付成功"))
+    }
 }

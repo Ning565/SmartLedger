@@ -10,6 +10,18 @@
     用 split("(\\s)*,(\\s)*") 解析，只吃逗号两侧空白、不 trim 首尾——
     多行缩进会让第一个包名带前导空格而永不匹配（微信侧静默失效，P0-1）。
     accessibilityEventTypes 编译为 int flag，不受空白影响，可多行。
+
+  ⚠ accessibilityFlags 的每一项都必须是真实生效的（debug.4 真机教训）：
+  - flagRetrieveInteractiveWindows：AccessibilityService.getWindows() 的硬前提。
+    缺它时 getWindows() 直接返回空列表且不抛异常 —— debug.3 加的「多窗口遍历
+    兜底」（微信支付结果页是独立 Window，rootInActiveWindow 未必指向它）因此
+    完全空转，三场景全部不记账。
+  - flagIncludeNotImportantViews：微信自绘支付页可能把节点标成
+    importantForAccessibility=no，不开这项时树天然稀疏甚至为空。
+    代价是普通页面节点变多，已由 UiTreeSnapshotExtractor 的
+    MAX_VISITED_VIEWS(800) / MAX_NODES(300) 双重封顶。
+  - flagReportViewIds：诊断里要展示 viewId 用于校准。
+  这几项由 tools/verify_a11y_config.py 对编译产物校验，防止再次静默失效。
 -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -28,4 +40,4 @@
 
     android:canRetrieveWindowContent="true"
 
-    android:accessibilityFlags="flagReportViewIds" />
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews" />

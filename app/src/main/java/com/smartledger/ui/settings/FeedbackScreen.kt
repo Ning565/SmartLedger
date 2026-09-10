@@ -212,10 +212,14 @@ fun FeedbackScreen(
                         context.startActivity(intent)
                     } catch (e: Exception) {
                         // 如果没有邮件客户端，复制到剪贴板
-                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        val clip = android.content.ClipData.newPlainText("feedback", "joah45@qq.com\n$feedbackText")
-                        clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "已复制邮箱和反馈内容到剪贴板", Toast.LENGTH_LONG).show()
+                        val copied = com.smartledger.util.AppClipboard.copy(
+                            context, "feedback", "joah45@qq.com\n$feedbackText"
+                        )
+                        Toast.makeText(
+                            context,
+                            if (copied) "已复制邮箱和反馈内容到剪贴板" else "复制失败，请手动记录邮箱 joah45@qq.com",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 },
                 modifier = Modifier

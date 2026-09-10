@@ -603,15 +603,18 @@ fun SettingsScreen(
 
     // ═══ 无障碍采集诊断（仅调试模式显示，方案 6.3） ═══
     if (showA11yDiagnostics) {
+        // 打开时结算一次：内容很长（计数 + 服务能力 + 最近动态 + 最近 5 次扫描的
+        // 完整节点树），展示与「复制全部」共用同一份文本，顺便避免每次重组
+        // 都重算一遍计数
+        val diagText = remember { AccessibilityDiagnostics.buildSummary(context) }
         com.smartledger.ui.components.SmartLedgerDialog(
             onDismissRequest = { showA11yDiagnostics = false },
             iconTint = SmartLedgerColors.accent,
             title = "页面辅助识别 · 采集诊断",
-            // 诊断文本较长（今日计数 + 最近动态），用可滚动的 content 而非 text，
-            // 避免小屏上把弹窗顶出屏幕
+            // 用可滚动的 content 而非 text，避免小屏上把弹窗顶出屏幕
             content = {
                 Text(
-                    text = AccessibilityDiagnostics.buildSummary(context),
+                    text = diagText,
                     style = MaterialTheme.typography.bodySmall,
                     color = SmartLedgerColors.fgSecondary,
                     lineHeight = 20.sp,
@@ -620,8 +623,21 @@ fun SettingsScreen(
                         .verticalScroll(rememberScrollState())
                 )
             },
-            confirmText = "好的",
-            onConfirm = { showA11yDiagnostics = false }
+            // 弹窗只能滚不能选，整段照抄不现实 —— 一键复制走剪贴板
+            confirmText = "复制全部",
+            onConfirm = {
+                val copied = com.smartledger.util.AppClipboard.copy(
+                    context, "SmartLedger 采集诊断", diagText
+                )
+                Toast.makeText(
+                    context,
+                    if (copied) "已复制采集诊断到剪贴板" else "复制失败",
+                    Toast.LENGTH_SHORT
+                ).show()
+                showA11yDiagnostics = false
+            },
+            dismissText = "关闭",
+            onDismiss = { showA11yDiagnostics = false }
         )
     }
 

@@ -1,0 +1,174 @@
+package com.smartledger.service.accessibility
+
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/** 包名 → 中文别名（诊断模块与抓取格式化共用，避免两份映射漂移） */
+internal fun packageAlias(pkg: String): String = when (pkg) {
+    AccessibilityFingerprintBuilder.WECHAT_PACKAGE -> "微信"
+    AccessibilityFingerprintBuilder.ALIPAY_PACKAGE -> "支付宝"
+    else -> pkg.substringAfterLast('.')
+}
+
+/**
+ * 无障碍「完整扫描」的观测快照（纯数据，不依赖 Android API，可 JVM 单测）。
+ *
+ * ## 为什么需要它
+ * debug.4 真机实测：微信转出 / 转入 / 商家付款三条路径全部不记账，
+ * 诊断显示 `完整扫描=134 / 成功识别=1`，而扫描样本里出现的是**聊天页**的节点
+ * （`转账成功，马上通知TA` / `图片` / `小视频` / `红包` / `转账` / `¥0.02`）。
+ *
+ * 指向的根因是「扫到的窗口不是用户正在看的那个」——`rootInActiveWindow`
+ * 指向微信聊天窗口，支付页在另一个窗口里。旧诊断只存了**一次**扫描的
+ * 前 30 条文本、每条截断 24 字、不含窗口信息，既看不出扫的是哪个窗口，
+ * 也看不出那个窗口里到底有什么。
+ *
+ * [ScanCapture] 把一次扫描的**全部候选窗口**连同各自的 root 结构、
+ * 信号判定与**完整节点列表**记下来：事后既能确认选窗是否修好，
+ * 也能在词形不匹配时直接照着真实页面校准词表。
+ */
+data class WindowCapture(
+    /** 候选窗口下标（0 起），与 [AccessibilityWindowSelector] 的 index 同源 */
+    val windowIndex: Int,
+    /** AccessibilityWindowInfo.type；-1 = 该窗口不在 windows 列表里（仅 activeRoot 降级） */
+    val windowType: Int,
+    val isActive: Boolean,
+    val isFocused: Boolean,
+    val packageName: String?,
+    /** root 的短类名（如 FrameLayout）——区分「指错窗口」与「自绘页面」 */
+    val rootClass: String?,
+    val rootChildCount: Int,
+    /** 是否就是 rootInActiveWindow 对应的窗口 */
+    val isActiveRoot: Boolean,
+    /** 完整文本节点列表（深度 / viewId / 原文都不截断） */
+    val nodes: List<UiTextNode>,
+    /** 整页文本命中的强状态词（空 = 没有状态词） */
+    val strongWords: List<String>,
+    /** 整页是否存在金额形态（与探测层同一张宽松正则） */
+    val amountProbeHit: Boolean
+) {
+    /** 双条件同时满足才是「支付强信号」（与 [PaymentSignalDetector.hasStrongSignal] 同口径） */
+    val signalHit: Boolean get() = strongWords.isNotEmpty() && amountProbeHit
+}
+
+/**
+ * 一次完整扫描的完整观测。
+ *
+ * [outcome] 在解析 / 去重 / 入账各分支回填，因此「扫到了但没记账」的每一步
+ * 都能在诊断里对上号，而不是只看到一个「成功识别：0」。
+ */
+data class ScanCapture(
+    val at: Long,
+    val packageName: String,
+    /** rootInActiveWindow 是否可用 */
+    val rootAvailable: Boolean,
+    /** `windows` 为空 / 抛异常时的原因（flag 未生效会在这里显形） */
+    val windowsNote: String?,
+    /** 用的哪一个窗口的文本判进位，null = 没有可用快照 */
+    val chosenIndex: Int?,
+    val windows: List<WindowCapture>,
+    val outcome: String
+)
+
+/** 选窗的输入（纯数据，供 [AccessibilityWindowSelector] 单测） */
+data class WindowCandidate(
+    val index: Int,
+    val signalHit: Boolean,
+    val textNodeCount: Int,
+    val isActiveRoot: Boolean
+)
+
+/**
+ * 多窗口候选的选取规则（纯函数，方案 6.4 的「可单测」约束）。
+ *
+ * 微信支付流程里的窗口不止一个：聊天页（活跃窗口）与支付结果页常常并存，
+ * `rootInActiveWindow` 未必指向后者。这里在全部同包名窗口里挑一个交给 Parser。
+ *
+ * 规则（按优先级）：
+ *  1. **命中支付强信号的窗口优先**
+ *  2. 多个命中时取**文本节点最少**的
+ *  3. 都没命中时取**文本节点最多**的（只影响诊断样本，不会入库）
+ *  4. 平票时 activeRoot 优先，再按窗口下标取靠前的
+ *
+ * 规则 2 刻意取「最少」而非最多：微信聊天页本身也含
+ * `你发起了一笔转账` + `¥0.01`（两者都在强词表 / expenseWords 里），
+ * 按节点数取最多会优先选中又大又吵的聊天页，把一次转出记成两笔。
+ * 支付结果页小而聚焦（状态词 + 金额 + 按钮，通常十几个节点），
+ * 节点数是这两者最稳的区分器。
+ */
+object AccessibilityWindowSelector {
+
+    fun selectBest(candidates: List<WindowCandidate>): Int? {
+        if (candidates.isEmpty()) return null
+
+        val hits = candidates.filter { it.signalHit }
+        return if (hits.isNotEmpty()) {
+            hits.minWith(
+                compareBy({ it.textNodeCount }, { !it.isActiveRoot }, { it.index })
+            ).index
+        } else {
+            candidates.maxWith(
+                compareBy({ it.textNodeCount }, { it.isActiveRoot }, { -it.index })
+            ).index
+        }
+    }
+}
+
+/**
+ * 抓取结果的文本化（纯函数；诊断弹窗与「复制全部」共用同一份输出）。
+ *
+ * 输出刻意做成「人能直接读、也能直接发给我」的形状：窗口头一行带
+ * 类型 / 活跃 / root 类名 / 节点数 / 命中词，节点逐行带深度与 viewId。
+ */
+object ScanCaptureFormatter {
+
+    /**
+     * 选中窗口的节点上限：支付结果页通常十几个节点，150 条足以完整覆盖，
+     * 同时给「万一被选中了」的聊天页封顶。
+     */
+    private const val MAX_NODES_CHOSEN = 150
+
+    /** 未选中窗口的节点上限：只需要够认出「这是聊天页」即可，避免整段输出爆炸 */
+    private const val MAX_NODES_OTHER = 20
+
+    fun format(capture: ScanCapture): List<String> = buildList {
+        val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(capture.at))
+        add(
+            "[$time] ${packageAlias(capture.packageName)} root可用=${capture.rootAvailable} " +
+                "窗口数=${capture.windows.size} 选中=${capture.chosenIndex ?: "-"} " +
+                "→ ${capture.outcome}"
+        )
+        capture.windowsNote?.let { add("  ⚠ $it") }
+
+        capture.windows.forEach { w ->
+            val marks = buildList {
+                if (w.isActiveRoot) add("activeRoot")
+                if (w.isActive) add("active")
+                if (w.isFocused) add("focused")
+            }.joinToString(" ").ifBlank { "—" }
+            add(
+                "  [w${w.windowIndex} $marks type=${w.windowType}] " +
+                    "root=${w.rootClass ?: "null"} 子节点=${w.rootChildCount} " +
+                    "文本节点=${w.nodes.size} 信号=${if (w.signalHit) "命中" else "未命中"} " +
+                    "命中词=${w.strongWords.joinToString("/").ifBlank { "—" }} " +
+                    "金额形态=${if (w.amountProbeHit) "有" else "无"}"
+            )
+            val limit = if (w.windowIndex == capture.chosenIndex) MAX_NODES_CHOSEN else MAX_NODES_OTHER
+            if (w.nodes.isEmpty()) {
+                add("      （无文本节点）")
+            } else {
+                w.nodes.take(limit).forEach { n ->
+                    add("      · L${n.depth} ${shortClass(n.className)} ${shortId(n.viewId)} \"${n.text}\"")
+                }
+                if (w.nodes.size > limit) add("      …（截断，共 ${w.nodes.size} 条）")
+            }
+        }
+    }
+
+    private fun shortClass(name: String?): String =
+        name?.substringAfterLast('.')?.ifBlank { null } ?: "?"
+
+    private fun shortId(id: String?): String =
+        id?.let { "id=" + it.substringAfterLast('/') }.orEmpty()
+}

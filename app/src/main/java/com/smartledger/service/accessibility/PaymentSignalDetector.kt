@@ -56,8 +56,21 @@ object PaymentSignalDetector {
     fun hasStrongSignal(text: String): Boolean {
         val normalized = UiTreeTextNormalizer.normalize(text)
         if (normalized.isEmpty()) return false
-        return strongWordsIn(normalized).isNotEmpty() &&
-            AMOUNT_PROBE_REGEX.containsMatchIn(normalized)
+        return strongWordsIn(normalized).isNotEmpty() && hasAmountForm(normalized)
+    }
+
+    /**
+     * 单独的「金额形态存在性」判定。
+     *
+     * 与 [hasStrongSignal] 内部用的是同一张宽松正则（单一事实来源）——
+     * 诊断层要分开展示「有状态词但没金额」还是「有金额但没状态词」，
+     * 这是判断词表漏词还是页面结构不对的关键分叉。
+     * ⚠ 与 [hasStrongSignal] 一样**只回答存在性**，绝不用于入账数值。
+     */
+    fun hasAmountForm(text: String): Boolean {
+        val normalized = UiTreeTextNormalizer.normalize(text)
+        if (normalized.isEmpty()) return false
+        return AMOUNT_PROBE_REGEX.containsMatchIn(normalized)
     }
 
     /** 命中的状态词列表（供指纹构建复用，保证探测与指纹用同一张词表） */

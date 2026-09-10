@@ -8,19 +8,23 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicIntegerArray
 
 /**
- * 无障碍采集诊断（C5，方案 6.3）。
+ * 无障碍采集诊断（C5，方案 6.3；debug.4 重建）。
  *
- * 只在 debug_toasts 开启或 BuildConfig.DEBUG 时由设置页展示；
- * 计数与摘要不落页面全文 —— 与方案 6.3 的 Release 日志红线一致。
+ * ## 为什么要重建
+ * 旧诊断只存「最近一次扫描的前 30 条文本、每条截断 24 字」，且不含窗口信息。
+ * debug.4 真机三场景全失效时，这份输出既看不出扫的是哪个窗口、也看不出
+ * 那个窗口里到底有什么 —— 排查只能靠猜。
  *
- * 唯一例外是 [lastScanSample]（真机校准 9/10）：调试模式下保存
- * **最近一次完整扫描**的前 30 条节点文本（每条截断 24 字，内存 only，
- * 进程重启即清，关闭调试开关后不再记录）。它的唯一用途是让用户
- * 能直接看到真实页面的无障碍文本 —— 用于校准词表（预设词形与
- * 真实页面不符是首轮真机测试三场景全部失效的根因）。
+ * 现在改为存**最近 [SCAN_RING_SIZE] 次完整扫描的完整观测**
+ * （见 [ScanCapture]：每个候选窗口的 root 结构 + 完整节点列表 + 信号分项判定），
+ * 外加一行**服务能力**（`serviceInfo.flags`）：`windows` 拿不到窗口时，
+ * 一眼就能分清是 flag 没生效还是系统限制。
  *
- * 存储：最近事件走内存 ring（进程重启即清，够诊断用）；
- * 今日计数走 prefs 按日 key，跨日自动重置。
+ * ## 隐私与开关
+ * 抓取只在「调试提示」（`debug_toasts`）开启时记录，内存 only、进程重启即清；
+ * 关闭开关后不再记录。内容不落盘、不上传，只有用户主动点「复制全部」才会离开设备。
+ *
+ * 存储：抓取与最近事件走内存 ring；今日计数走 prefs 按日 key，跨日自动重置。
  */
 object AccessibilityDiagnostics {
 
@@ -36,11 +40,10 @@ object AccessibilityDiagnostics {
     private const val IDX_DEDUP = 4
     private const val COUNT_FIELDS = 5
 
-    private const val RING_SIZE = 8
+    private const val RING_SIZE = 12
 
-    /** 扫描样本上限（条数）与单条截断长度 */
-    private const val SAMPLE_MAX_ITEMS = 30
-    private const val SAMPLE_MAX_CHARS = 24
+    /** 保留多少次完整扫描的抓取（够覆盖一次转账流程：转账页 → 支付成功页 → 详情页） */
+    private const val SCAN_RING_SIZE = 5
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -51,36 +54,52 @@ object AccessibilityDiagnostics {
     private val recentEvents = ConcurrentLinkedDeque<String>()
 
     /**
-     * 最近一次完整扫描的页面文本样本（真机校准，仅调试模式记录）。
-     * Service 的 IO 线程写、设置页主线程读 → @Volatile 保证可见性；
-     * 整体替换而非逐条修改，读到的要么是旧快照要么是新快照，不会交错。
+     * 最近几次完整扫描的抓取（debug.4，仅调试模式记录）。
+     * Service 的 IO 线程写、设置页主线程读 → ConcurrentLinkedDeque 保证安全；
+     * 整体快照读，不会读到写一半的列表。
      */
-    @Volatile
-    private var lastScanSample: List<String> = emptyList()
+    private val scanCaptures = ConcurrentLinkedDeque<ScanCapture>()
 
-    /** 调试模式下记录最近一次完整扫描的节点文本（信号是否命中都记） */
-    fun onScanTexts(texts: List<String>, signalHit: Boolean) {
-        lastScanSample = buildList {
-            add((if (signalHit) "信号命中" else "信号未命中") + "，节点文本：")
-            texts.take(SAMPLE_MAX_ITEMS).forEach { add("· " + it.take(SAMPLE_MAX_CHARS)) }
-        }
+    /** 服务能力摘要（onServiceConnected 时上报，用于判断 flag 是否真的生效） */
+    @Volatile
+    private var capabilities: String? = null
+
+    /** 最近一次 `windows` 读取的结果（数量或报错），独立于单次扫描展示 */
+    @Volatile
+    private var lastWindowsNote: String? = null
+
+    // ═══ 写入端（Service 调用） ═══
+
+    /**
+     * 上报无障碍服务的**实际生效**配置。
+     *
+     * `accessibilityFlags` 写在 XML 里不等于运行时生效（用户可能在系统设置里
+     * 改过、厂商 ROM 可能裁剪）。`windows` 返回空时，这一行是唯一的判据。
+     */
+    fun onCapabilities(flags: Int, canRetrieveWindowContent: Boolean) {
+        capabilities = "flags=0x${Integer.toHexString(flags)} " +
+            "canRetrieveWindowContent=$canRetrieveWindowContent"
     }
 
-    /** 最近扫描样本（设置页诊断弹窗展示） */
-    fun sampleSummary(): List<String> = lastScanSample
+    /** 记录一次完整扫描的完整观测；同时刷新 [lastWindowsNote] */
+    fun onScanCapture(capture: ScanCapture) {
+        lastWindowsNote = capture.windowsNote
+        while (scanCaptures.size >= SCAN_RING_SIZE) scanCaptures.pollFirst()
+        scanCaptures.addLast(capture)
+    }
 
     fun onEvent(pkg: String) {
-        pushRing("${alias(pkg)} 事件 ${timeFmt.format(Date())}")
+        pushRing("${packageAlias(pkg)} 事件 ${timeFmt.format(Date())}")
         bump(IDX_EVENTS)
     }
 
     fun onProbeHit(pkg: String) {
-        pushRing("${alias(pkg)} 探测命中 ${timeFmt.format(Date())}")
+        pushRing("${packageAlias(pkg)} 探测命中 ${timeFmt.format(Date())}")
         bump(IDX_PROBE)
     }
 
     fun onFullScan(pkg: String) {
-        pushRing("${alias(pkg)} 完整扫描 ${timeFmt.format(Date())}")
+        pushRing("${packageAlias(pkg)} 完整扫描 ${timeFmt.format(Date())}")
         bump(IDX_SCAN)
     }
 
@@ -98,19 +117,17 @@ object AccessibilityDiagnostics {
     /** 真机校准（9/10）：事件到了但 rootInActiveWindow 不可用 ——
      *  不计入扫描计数，但进 ring 让用户能在诊断里看到 */
     fun onRootUnavailable(pkg: String) {
-        pushRing("${alias(pkg)} 窗口不可用（页面切换间隙或系统限制） ${timeFmt.format(Date())}")
+        pushRing("${packageAlias(pkg)} 窗口不可用（页面切换间隙或系统限制） ${timeFmt.format(Date())}")
     }
 
-    /**
-     * 真机校准（9/10 debug.4）：完整扫描拿到**空节点树** ——
-     * rootInfo 区分「指错窗口」（root 是密码键盘等壳）与「自绘页面」
-     * （root 正常但无文本）；备选窗口数 > 0 时多窗口遍历已尝试。
-     */
-    fun onEmptyTree(pkg: String, rootInfo: String, altWindows: Int) {
-        pushRing("${alias(pkg)} 树为空 $rootInfo 备选窗口$altWindows ${timeFmt.format(Date())}")
+    // ═══ 读取端（设置页调用） ═══
+
+    /** 最近抓取的文本化输出（纯函数 [ScanCaptureFormatter] 负责格式） */
+    fun captureSummary(): List<String> = scanCaptures.toList().reversed().flatMap {
+        ScanCaptureFormatter.format(it)
     }
 
-    /** 诊断摘要文本（设置页弹窗展示） */
+    /** 诊断摘要文本（设置页弹窗展示 + 「复制全部」共用同一份） */
     fun buildSummary(context: Context): String {
         val counts = readCounts(context)
         val events = recentEvents.toList()
@@ -122,6 +139,10 @@ object AccessibilityDiagnostics {
             appendLine("· 成功识别：${counts[IDX_RECOG]}")
             appendLine("· 指纹去重：${counts[IDX_DEDUP]}")
             appendLine()
+            appendLine("服务能力：")
+            appendLine("· ${capabilities ?: "尚未上报 —— 服务本次进程内未连接过"}")
+            lastWindowsNote?.let { appendLine("· 最近一次 windows：$it") }
+            appendLine()
             appendLine("最近动态：")
             if (events.isEmpty()) {
                 appendLine("（暂无 —— 服务未收到任何微信/支付宝事件）")
@@ -129,12 +150,12 @@ object AccessibilityDiagnostics {
                 events.reversed().forEach { appendLine("· $it") }
             }
             appendLine()
-            appendLine("最近扫描样本（调试模式，最多30条）：")
-            val sample = lastScanSample
-            if (sample.isEmpty()) {
+            appendLine("最近扫描抓取（调试模式，最近 $SCAN_RING_SIZE 次完整扫描）：")
+            val captures = captureSummary()
+            if (captures.isEmpty()) {
                 appendLine("（暂无 —— 未开调试模式，或服务从未执行过完整扫描）")
             } else {
-                sample.forEach { appendLine(it) }
+                captures.forEach { appendLine(it) }
             }
         }
     }
@@ -181,11 +202,5 @@ object AccessibilityDiagnostics {
     private fun pushRing(item: String) {
         while (recentEvents.size >= RING_SIZE) recentEvents.pollFirst()
         recentEvents.addLast(item)
-    }
-
-    private fun alias(pkg: String): String = when (pkg) {
-        AccessibilityFingerprintBuilder.WECHAT_PACKAGE -> "微信"
-        AccessibilityFingerprintBuilder.ALIPAY_PACKAGE -> "支付宝"
-        else -> pkg.substringAfterLast('.')
     }
 }
