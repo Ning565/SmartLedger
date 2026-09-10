@@ -279,131 +279,23 @@ class PaymentNotificationListener : NotificationListenerService() {
         )
 
         // 调试模式下弹出提示（文案与主页语气一致）
-        if (isDebugEnabled()) {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                val typeLabel = if (parsed.type == "income") "收入" else "支出"
-                val conf = if (parsed.confidence == ParseConfidence.UNCERTAIN) " · 待确认" else ""
-                android.widget.Toast.makeText(
-                    applicationContext,
-                    "$typeLabel ¥${String.format("%.2f", parsed.amount)} · ${parsed.paymentMethod}$conf",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
+        // 注：识别成功 Toast 统一在 AutoRecordProcessor 里弹，
+        // 这里只保留「解析失败」的调试提示
 
-        // 模糊 / 全部需确认：先弹确认，确认前不落库
-        if (shouldAskConfirm(parsed)) {
-            askUserConfirm(parsed, postTime)
-            return
-        }
-
+        // 确认与入库逻辑统一在 AutoRecordProcessor（任务 1 抽取）：
+        // 无障碍链路与通知链路共用同一条「确认→去重→分类→入库→通知」，
+        // 通知解析、聚合补全、银行规则等上游全部保持不变
         scope.launch {
             try {
-                saveAutoTransaction(parsed, postTime)
+                AutoRecordProcessor(applicationContext).process(
+                    parsed = parsed,
+                    transactionTime = postTime,
+                    source = AutoCaptureSource.NOTIFICATION
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save transaction", e)
             }
         }
-    }
-
-    /** 设置：模糊需确认（默认开）；或全部自动记账都确认 */
-    private fun shouldAskConfirm(parsed: ParsedPayment): Boolean {
-        val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
-        if (prefs.getBoolean("confirm_all_auto", false)) return true
-        if (!prefs.getBoolean("confirm_uncertain", true)) return false
-        return parsed.confidence == ParseConfidence.UNCERTAIN
-    }
-
-    private fun askUserConfirm(parsed: ParsedPayment, postTime: Long) {
-        val pendingId = PendingConfirmStore.put(
-            amount = parsed.amount,
-            type = parsed.type,
-            merchant = parsed.merchant,
-            paymentMethod = parsed.paymentMethod,
-            notificationKey = parsed.notificationKey,
-            transactionTime = postTime,
-            reason = parsed.uncertainReason ?: "识别结果不够确定",
-            rawSnippet = parsed.rawSnippet
-        )
-        Log.d(TAG, "Ask confirm pendingId=$pendingId reason=${parsed.uncertainReason}")
-        com.smartledger.util.NotificationStyle.notifyNeedsConfirm(
-            applicationContext,
-            pendingId,
-            parsed.amount,
-            parsed.paymentMethod,
-            parsed.uncertainReason
-        )
-        try {
-            val intent = android.content.Intent(
-                applicationContext,
-                com.smartledger.ConfirmPaymentActivity::class.java
-            ).apply {
-                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(com.smartledger.ConfirmPaymentActivity.EXTRA_PENDING_ID, pendingId)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            // 部分机型后台禁弹 Activity：仍可通过「待确认」通知点开
-            Log.w(TAG, "Confirm activity blocked, use notification tap", e)
-        }
-    }
-
-    private suspend fun saveAutoTransaction(parsed: ParsedPayment, postTime: Long) {
-        val db = AppDatabase.getInstance(applicationContext)
-
-        val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
-        val duplicate = DedupHelper.findDuplicate(
-            db.transactionDao(),
-            amountCents,
-            parsed.type,
-            parsed.merchant,
-            parsed.paymentMethod,
-            postTime
-        )
-
-        if (duplicate != null) {
-            Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
-            DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, parsed.paymentMethod, parsed.merchant)
-            return
-        }
-
-        // 分类先算好再一次性 insert，避免 insert+update 触发首页两次全量刷新卡顿
-        var categoryId: Long? = null
-        try {
-            val categories = db.categoryDao().getAllOnce()
-            categoryId = SmartCategorizer.categorize(
-                merchant = parsed.merchant,
-                paymentMethod = parsed.paymentMethod,
-                note = null,
-                categories = categories,
-                type = parsed.type
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Auto categorize failed", e)
-        }
-
-        val transaction = Transaction(
-            amount = parsed.amount,
-            type = parsed.type,
-            categoryId = categoryId,
-            merchant = parsed.merchant,
-            paymentMethod = parsed.paymentMethod,
-            note = null,
-            source = "auto",
-            notificationKey = parsed.notificationKey,
-            transactionTime = postTime
-        )
-        val id = db.transactionDao().insert(transaction)
-        Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}")
-
-        com.smartledger.util.NotificationStyle.notifyPaymentDetected(
-            applicationContext,
-            parsed.amount,
-            parsed.merchant,
-            parsed.paymentMethod,
-            parsed.type,
-            id
-        )
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {}

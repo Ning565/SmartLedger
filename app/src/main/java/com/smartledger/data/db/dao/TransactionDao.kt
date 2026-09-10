@@ -32,6 +32,14 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE transactionTime BETWEEN :startTime AND :endTime ORDER BY transactionTime DESC")
     suspend fun getByTimeRangeOnce(startTime: Long, endTime: Long): List<Transaction>
 
+    /**
+     * 按 notificationKey 精确查重（C9）。无障碍链路的 key 形如
+     * `a11y:wechat:<hash>`，指纹不含时间 —— 同一历史支付页永远同 key，
+     * 隔天重开页面时 DedupHelper 的时间窗救不了，靠这里终身去重。
+     */
+    @Query("SELECT * FROM transactions WHERE notificationKey = :key LIMIT 1")
+    suspend fun getByNotificationKeyOnce(key: String): Transaction?
+
     @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'expense' AND transactionTime BETWEEN :startTime AND :endTime")
     fun getExpenseSum(startTime: Long, endTime: Long): Flow<Double>
 

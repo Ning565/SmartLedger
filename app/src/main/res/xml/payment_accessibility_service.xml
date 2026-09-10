@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  只监听微信与支付宝的页面事件（方案 2.3）：
+  - packageNames 白名单：其它 App 的无障碍事件不会进本服务
+  - 只订阅 WINDOW_STATE_CHANGED / WINDOW_CONTENT_CHANGED 两种类型
+  - notificationTimeout=300：同类型事件的系统级节流
+  - 不使用 typeAllMask、不监听所有 App（耗电红线）
+
+  ⚠ packageNames 必须单行无空白：AOSP 的 AccessibilityServiceInfo
+    用 split("(\\s)*,(\\s)*") 解析，只吃逗号两侧空白、不 trim 首尾——
+    多行缩进会让第一个包名带前导空格而永不匹配（微信侧静默失效，P0-1）。
+    accessibilityEventTypes 编译为 int flag，不受空白影响，可多行。
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+
+    android:description="@string/accessibility_payment_description"
+
+    android:accessibilityEventTypes="
+        typeWindowStateChanged|
+        typeWindowContentChanged"
+
+    android:accessibilityFeedbackType="feedbackGeneric"
+
+    android:packageNames="com.tencent.mm,com.eg.android.AlipayGphone"
+
+    android:notificationTimeout="300"
+
+    android:canRetrieveWindowContent="true"
+
+    android:accessibilityFlags="flagReportViewIds" />

@@ -11,11 +11,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -58,6 +61,7 @@ import com.smartledger.ui.components.PillTone
 import com.smartledger.ui.components.SubPanel
 import com.smartledger.ui.components.UiTokens
 import com.smartledger.ui.theme.AppSpacing
+import com.smartledger.ui.theme.AppType
 import com.smartledger.ui.theme.SmartLedgerColors
 
 /**
@@ -498,7 +502,21 @@ fun AiSettingsScreen(
             onDismissRequest = { viewModel.dismissPrivacyDialog(acknowledged = false) },
             eyebrow = "PRIVACY",
             title = "启用 AI 前请了解",
-            text = AI_DISCLOSURE_SHORT,
+            // 长文本必须走 content + verticalScroll：SmartLedgerDialog 的 text 参数
+            // 外层没有滚动容器，AlertDialog 的 text 区高度受限，
+            // 文案超出后既看不全也滑不动（与诊断弹窗同一修法，见方案 B.3）。
+            // 样式沿用 SmartLedgerDialog 内部渲染 text 的 AppType.body + fgSecondary，
+            // 保证改成 content 后视觉不变。
+            content = {
+                Text(
+                    text = AI_DISCLOSURE_SHORT,
+                    style = AppType.body,
+                    color = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
             confirmText = "我已了解",
             onConfirm = { viewModel.dismissPrivacyDialog(acknowledged = true) },
             dismissText = "再想想",
@@ -511,7 +529,17 @@ fun AiSettingsScreen(
             onDismissRequest = { showDataDisclosure = false },
             eyebrow = "PRIVACY",
             title = "AI 会收到什么数据",
-            text = AI_DISCLOSURE_FULL,
+            // 同上：这份文案约 20 行，不滚动则大部分内容永远看不到
+            content = {
+                Text(
+                    text = AI_DISCLOSURE_FULL,
+                    style = AppType.body,
+                    color = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
             confirmText = "知道了",
             onConfirm = { showDataDisclosure = false },
             dismissText = "",

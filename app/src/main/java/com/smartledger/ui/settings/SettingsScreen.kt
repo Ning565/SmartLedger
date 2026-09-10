@@ -8,7 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -19,9 +21,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.smartledger.service.accessibility.AccessibilityDiagnostics
+import com.smartledger.service.accessibility.AccessibilityStatus
 import com.smartledger.ui.theme.SmartLedgerColors
 import com.smartledger.ui.theme.ThemeManager
 import com.smartledger.ui.theme.ThemeMode
@@ -57,6 +64,32 @@ fun SettingsScreen(
     }
     var confirmAllAuto by remember {
         mutableStateOf(prefs.getBoolean("confirm_all_auto", false))
+    }
+
+    // ═══ 页面辅助识别（无障碍采集）═══
+    // 系统无障碍权限状态：从系统设置页返回后由 ON_RESUME 刷新
+    var a11yEnabled by remember {
+        mutableStateOf(AccessibilityStatus.isEnabledInSettings(context))
+    }
+    // App 内总开关：权限开着也能随时暂停解析（方案 2.4）
+    var a11yAutoRecord by remember {
+        mutableStateOf(prefs.getBoolean("accessibility_auto_record_enabled", true))
+    }
+    // P0-3：无障碍识别独立确认开关（默认关，谨慎用户可开）
+    var confirmA11y by remember {
+        mutableStateOf(prefs.getBoolean("confirm_accessibility", false))
+    }
+    var showA11yDiagnostics by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                a11yEnabled = AccessibilityStatus.isEnabledInSettings(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // 检查更新状态（版本号读安装包，勿写死）
@@ -301,6 +334,50 @@ fun SettingsScreen(
                                 } catch (_: Exception) {}
                             }
                         )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.FactCheck,
+                            label = "微信/支付宝页面辅助识别",
+                            subtitle = if (a11yEnabled) "已开启" else "去开启 · 补齐微信支付/转账无通知的场景",
+                            onClick = {
+                                try {
+                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                } catch (_: Exception) {}
+                            }
+                        )
+                        DividerLine()
+                        SwitchItem(
+                            icon = Icons.Outlined.Smartphone,
+                            label = "辅助识别开关",
+                            description = "无障碍权限已开启时可临时暂停解析支付页面，通知识别不受影响",
+                            checked = a11yAutoRecord,
+                            onCheckedChange = { enabled ->
+                                a11yAutoRecord = enabled
+                                prefs.edit().putBoolean("accessibility_auto_record_enabled", enabled).apply()
+                            }
+                        )
+                        DividerLine()
+                        SwitchItem(
+                            icon = Icons.Outlined.FactCheck,
+                            label = "页面识别需确认",
+                            description = "每次页面识别结果先弹窗确认再入账，适合谨慎使用（默认关闭）",
+                            checked = confirmA11y,
+                            onCheckedChange = { enabled ->
+                                confirmA11y = enabled
+                                prefs.edit().putBoolean("confirm_accessibility", enabled).apply()
+                            }
+                        )
+                        if (debugToastsEnabled) {
+                            DividerLine()
+                            MenuSettingItem(
+                                icon = Icons.Outlined.Analytics,
+                                label = "采集诊断",
+                                subtitle = if (a11yEnabled) "服务运行中" else "服务未开启",
+                                onClick = { showA11yDiagnostics = true }
+                            )
+                        }
                     }
                 }
             }
@@ -521,6 +598,30 @@ fun SettingsScreen(
             },
             dismissText = "取消",
             onDismiss = { pendingInstallFile = null }
+        )
+    }
+
+    // ═══ 无障碍采集诊断（仅调试模式显示，方案 6.3） ═══
+    if (showA11yDiagnostics) {
+        com.smartledger.ui.components.SmartLedgerDialog(
+            onDismissRequest = { showA11yDiagnostics = false },
+            iconTint = SmartLedgerColors.accent,
+            title = "页面辅助识别 · 采集诊断",
+            // 诊断文本较长（今日计数 + 最近动态），用可滚动的 content 而非 text，
+            // 避免小屏上把弹窗顶出屏幕
+            content = {
+                Text(
+                    text = AccessibilityDiagnostics.buildSummary(context),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SmartLedgerColors.fgSecondary,
+                    lineHeight = 20.sp,
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
+            confirmText = "好的",
+            onConfirm = { showA11yDiagnostics = false }
         )
     }
 

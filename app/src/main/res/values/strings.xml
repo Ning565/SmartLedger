@@ -23,4 +23,5 @@
     <string name="record_this">记这笔</string>
     <string name="permission_required">需要以下权限</string>
     <string name="grant_permission">授予权限</string>
+    <string name="accessibility_payment_description">用于在微信、支付宝的支付成功页自动识别金额与商户并记账。仅在微信或支付宝页面发生内容变化时读取当前页面文本，不截屏、不录屏、不上传任何内容。</string>
 </resources>
