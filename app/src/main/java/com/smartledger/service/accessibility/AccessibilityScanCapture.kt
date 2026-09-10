@@ -98,10 +98,16 @@ data class WindowCapture(
     /**
      * 节点来源对照（debug.9）：同一个窗口用两个来源各浅读一次的文本数。
      *
-     * debug.5 起改用 `AccessibilityWindowInfo.getRoot()` 取根节点，微信**任何**
-     * 页面从此都读成空树；debug.3/debug.4 用的是 `rootInActiveWindow`，那时读得到。
-     * 这两个数并排就是「换来源即修复」的当场自证：
-     * `activeRoot=12 / windowRoot=0` 证实；两边都是 0 则证伪，回去查 flag。
+     * 假设是「debug.5 换用 `AccessibilityWindowInfo.getRoot()` 取根节点，于是
+     * 微信**任何**页面都读成空树」。真机读数**推翻了它** —— 两个来源都是 0：
+     *
+     * ```
+     * 浅读对照：activeRoot=0 / windowRoot=0
+     * ```
+     *
+     * 这行因此保留为常规诊断：它同时排除了节点来源，也顺带排除了
+     * 「两个来源指向不同窗口」。两个数都是 0 时，剩下的解释只能落在
+     * 服务配置或系统限制上，而不是我们读哪个对象。
      */
     val activeRootShallowTexts: Int? = null,
     val windowRootShallowTexts: Int? = null,

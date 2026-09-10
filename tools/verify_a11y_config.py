@@ -14,10 +14,14 @@ AOSP 的 AccessibilityServiceInfo 用 split("(\\s)*,(\\s)*") 解析且不 trim�
      值 == 代码常量 WECHAT_PACKAGE/ALIPAY_PACKAGE 的拼接（逐字符）
   2. packageNames 值不含任何空白字符
   3. accessibilityEventTypes 编译为 0x820（typeWindowStateChanged|typeWindowContentChanged）
-  4. accessibilityFlags 含 flagRetrieveInteractiveWindows / flagIncludeNotImportantViews
-     / flagReportViewIds —— 缺 flagRetrieveInteractiveWindows 时
-     AccessibilityService.getWindows() 返回空且不报错，「多窗口遍历」会静默空转
-     （debug.4 真机三场景全不记账的根因），属于同一类「配置与预期不一致」的坑
+  4. accessibilityFlags 含 flagRetrieveInteractiveWindows / flagReportViewIds
+     —— 缺 flagRetrieveInteractiveWindows 时 AccessibilityService.getWindows()
+     返回空且不报错，「多窗口遍历」会静默空转（debug.4 真机三场景全不记账的根因），
+     属于同一类「配置与预期不一致」的坑
+  5. accessibilityFlags **不含** flagIncludeNotImportantViews —— debug.10 的排除法
+     把它列为「微信全页面读成空树」的头号嫌疑，刻意摘掉做单变量验证。
+     断言它缺席而不是只从必含项里删掉：否则谁顺手加回来，这个脚本不会吭声，
+     而那正是 debug.5 犯的错（未经实证地加 flag，回归了五轮才发现）
 
 用法：
   python3 tools/verify_a11y_config.py [apk路径]
@@ -44,8 +48,13 @@ FLAG_RETRIEVE_INTERACTIVE_WINDOWS = 0x00000040
 
 REQUIRED_ACCESSIBILITY_FLAGS = {
     "flagRetrieveInteractiveWindows": FLAG_RETRIEVE_INTERACTIVE_WINDOWS,
-    "flagIncludeNotImportantViews": FLAG_INCLUDE_NOT_IMPORTANT_VIEWS,
     "flagReportViewIds": FLAG_REPORT_VIEW_IDS,
+}
+
+# debug.10：刻意排除。它是 debug.5 未经实证加的，且是排除法剩下唯一没被
+# 单独验证过的变量。若 debug.10 真机读到文本即可解除这条排除。
+FORBIDDEN_ACCESSIBILITY_FLAGS = {
+    "flagIncludeNotImportantViews": FLAG_INCLUDE_NOT_IMPORTANT_VIEWS,
 }
 
 # 从源码常量再读一遍做交叉校验（防止脚本与代码各自漂移）
@@ -226,6 +235,15 @@ def main():
                         else ""
                     )
                 )
+        for name, bit in FORBIDDEN_ACCESSIBILITY_FLAGS.items():
+            if value & bit:
+                fail(
+                    f"  含 {name} (0x{bit:x})！debug.10 起刻意排除它 —— "
+                    "它是「微信全页面读成空树」的嫌疑变量，"
+                    "要加回来必须先有真机证据，别重蹈 debug.5 的覆辙"
+                )
+            else:
+                ok(f"  不含 {name} (0x{bit:x})（debug.10 单变量验证）")
 
     print()
     if FAILURES:

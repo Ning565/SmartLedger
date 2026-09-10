@@ -16,12 +16,17 @@
     缺它时 getWindows() 直接返回空列表且不抛异常 —— debug.3 加的「多窗口遍历
     兜底」（微信支付结果页是独立 Window，rootInActiveWindow 未必指向它）因此
     完全空转，三场景全部不记账。
-  - flagIncludeNotImportantViews：微信自绘支付页可能把节点标成
-    importantForAccessibility=no，不开这项时树天然稀疏甚至为空。
-    代价是普通页面节点变多，已由 UiTreeSnapshotExtractor 的
-    MAX_VISITED_VIEWS(800) / MAX_NODES(300) 双重封顶。
   - flagReportViewIds：诊断里要展示 viewId 用于校准。
   这几项由 tools/verify_a11y_config.py 对编译产物校验，防止再次静默失效。
+
+  ⚠ debug.10 起**刻意去掉了** flagIncludeNotImportantViews。
+  它是 debug.5 按「微信自绘页可能把节点标成 not-important」**推测**加的，没有实证。
+  排除法把嫌疑收到它头上：
+    debug.4（只有 flagReportViewIds + rootInActiveWindow）→ 树非空（读得到聊天页）
+    debug.9（三个 flag     + rootInActiveWindow）→ 树全空
+  节点来源已被 debug.9 证伪，两个 flag 就只剩它没被单独验证过。
+  若这一包读到了文本，就是它；若仍是空树，下一个变量是
+  flagRetrieveInteractiveWindows（届时 getWindows() 与原始窗口清单会一起失效）。
 -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -40,4 +45,4 @@
 
     android:canRetrieveWindowContent="true"
 
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews" />
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows" />

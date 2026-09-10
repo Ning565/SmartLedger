@@ -21,13 +21,13 @@ android {
         // 部分，且 isNewerVersion 把 "0-debug" 这类段解析为 0 —— 两条合起来使调试包不会被
         // 已装版本判定为「更高版本」而误报更新（43bcb4b 已修）。
         // ⚠ N 必须与已发布的 tag 错开：debug.N 与 versionCode 的对应关系是 N + 28
-        // （debug.7 → 35，debug.8 → 36）。开新包前先 `git tag -l 'v1.1.0*'` 核对，
-        // 曾经差点命名成已存在的 debug.4 而撞名。
+        // （debug.7 → 35，debug.8 → 36，debug.9 → 37，debug.10 → 38）。
+        // 开新包前先 `git tag -l 'v1.1.0*'` 核对，曾经差点命名成已存在的 debug.4 而撞名。
         // 从 debug.7 起应用内「检查更新」能正常发现后续 debug 包
         // （UpdateChecker 改用 releases 列表接口 + VersionComparator 按预发布序号比较），
         // 所以 debug.8 可以直接在应用里升级，不必再手动装一次。
-        versionCode = 37
-        versionName = "1.1.0-debug.9"
+        versionCode = 38
+        versionName = "1.1.0-debug.10"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══

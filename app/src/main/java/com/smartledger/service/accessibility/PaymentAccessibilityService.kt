@@ -479,24 +479,36 @@ class PaymentAccessibilityService : AccessibilityService() {
                             WindowDecision.REJECT_OTHER_PKG -> "包名不符"
                             else -> "超出 $MAX_WINDOWS 个上限"
                         }
-                        raw += "$type root=有 pkg=${pkg ?: "?"} → 丢弃：$why"
+                        // 对照组（debug.10）：对**别的包**的窗口也浅读一次。
+                        // 只记条数、不记内容 —— 这些窗口本来就不参与识别，
+                        // 这样既不越界，又能在微信读空时当场分开两种完全不同的病因：
+                        // 「我们的服务读不了任何 App」还是「只有微信读不了」。
+                        // 光看微信一个窗口，这两者是同一种表象。
+                        val control = if (debug && decision == WindowDecision.REJECT_OTHER_PKG) {
+                            "（对照浅读=${baseline(root).size}）"
+                        } else {
+                            ""
+                        }
+                        raw += "$type root=有 pkg=${pkg ?: "?"} → 丢弃：$why$control"
                         continue
                     }
                     raw += "$type root=有 pkg=${pkg ?: "?（读不出，保留）"} → 采纳"
-                    // ⚠ debug.9 修复：活动窗口必须用 `rootInActiveWindow` **这个对象本身**。
+                    // 活动窗口用 `rootInActiveWindow` **那个对象**，其余窗口用 w.root
+                    // （`activeRoot` 为 null 或不属于本窗口时退回 w.root）。
+                    // `rootInActiveWindow` 是「用户正在看的那个窗口」的权威节点，
+                    // 语义上就该优先于 `AccessibilityWindowInfo.getRoot()`。
                     //
-                    // `AccessibilityWindowInfo.getRoot()` 返回的是另一个节点，而它读出来
-                    // 基本是一具空壳（className=null / childCount=0 / 不可见 / 不重要 / 0x0
-                    // —— 被回收节点的标准签名）。debug.5 加上 flagRetrieveInteractiveWindows
-                    // 让 getWindows() 生效后，就改用了它，于是微信**任何**页面都读成空树，
-                    // 包括聊天列表与「我」；而 debug.3/debug.4 走的是 rootInActiveWindow
-                    // 降级路径，那时是读得到文本的（诊断样本里有聊天页节点）。
+                    // ⚠ 但要说清历史：debug.9 曾把「微信全页面读成空树」归因于
+                    // debug.5 换用了 `w.root`，并加了一行 `浅读对照` 来自证。
+                    // **那份自证把假设推翻了** —— 真机两个来源都是 0：
+                    //     浅读对照：activeRoot=0 / windowRoot=0
+                    // 所以节点来源不是根因（本行保留只是因为它是更正确的写法，
+                    // 不是因为它是修复）。排除法之后，唯一没被单独验证过的变量
+                    // 就剩 XML 的 flag，debug.10 摘掉了 flagIncludeNotImportantViews。
                     //
                     // 顺带修正一个我自己的错误判据：debug.6 加的「主线程读数 vs IO 读数」
-                    // 对照**两个数都取自 w.root 这一个对象**，只能证明「不是跨线程失效」，
-                    // 证明不了「内容不存在」—— 为此白绕了一轮。
-                    // 活动窗口：把 rootInActiveWindow **那个对象**挑出来
-                    // （`activeRoot` 为 null 或不属于本窗口时退回 w.root）
+                    // 对照**两个数都取自同一个对象**（当时是 w.root），只能证明
+                    // 「不是跨线程失效」，证明不了「内容不存在」—— 为此白绕了一轮。
                     val activeNode = activeRoot?.takeIf { it.windowId == root.windowId }
                     val isActiveRoot = activeNode != null
                     val node = activeNode ?: root
