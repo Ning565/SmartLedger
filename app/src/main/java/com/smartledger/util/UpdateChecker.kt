@@ -9,7 +9,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -25,7 +25,17 @@ object UpdateChecker {
     // 应用内「检查更新」拉取的是这里的 Releases，写原作者仓库的话，
     // 在本仓库发的新版本老用户永远收不到提示。
     private const val REPO = "Ning565/SmartLedger"
-    private const val API_URL = "https://api.github.com/repos/$REPO/releases/latest"
+
+    /**
+     * 用 **releases 列表**而不是 `/releases/latest`。
+     *
+     * `/releases/latest` 按 GitHub 的定义**排除 prerelease 与 draft**。
+     * 本仓库的 6 个 Release 全部是 prerelease（debug 包按约定必须勾 prerelease），
+     * 该接口实测直接返回 **404** —— 应用内「检查更新」只会弹
+     * 「无法连接更新服务（404）」。列表接口包含 prerelease，
+     * 由 [pickBestRelease] 自己挑，不再受 GitHub 的 latest 语义摆布。
+     */
+    private const val API_URL = "https://api.github.com/repos/$REPO/releases?per_page=10"
 
     data class UpdateInfo(
         val versionName: String,      // e.g. "v1.0.3"
@@ -93,43 +103,26 @@ object UpdateChecker {
             val body = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
 
-            val json = JSONObject(body)
-            val tagName = json.getString("tag_name")           // e.g. "v1.0.3"
-            val releaseNotes = stripMarkdown(json.optString("body", ""))
-            val htmlUrl = json.getString("html_url")
+            val best = pickBestRelease(JSONArray(body))
+                ?: return@withContext CheckResult.Failed(
+                    "更新服务里没有可安装的包，请到 Release 页面手动下载"
+                )
 
-            var apkUrl: String? = null
-            val assets = json.optJSONArray("assets")
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    if (asset.getString("name").endsWith(".apk")) {
-                        apkUrl = asset.getString("browser_download_url")
-                        break
-                    }
-                }
-            }
+            Log.d(TAG, "local=$local remote=${best.tagName}")
 
-            val remote = tagName.removePrefix("v")
-            // debug tag（如 v1.1.0-debug.3）的 prerelease 后缀会让 split(".")
-            // 多出一段数字（[1,1,0,3]），被 isNewerVersion 误判为更高版本 ——
-            // 已装同版本号的用户永远收到更新提示（debug.3 实测的烦人误报）。
-            // 剥掉 '-' 后缀再比较：debug 包之间不提示更新（手动下载），
-            // 正式版（v1.2.0）比较不受影响。
-            val remoteCore = remote.substringBefore('-')
-            Log.d(TAG, "local=$local remote=$remote tag=$tagName")
-
-            if (isNewerVersion(local, remoteCore)) {
+            // 比较交给 VersionComparator：它按语义拆「核心段 + 预发布序号」，
+            // 因此 debug.5 → debug.6 判为更新，而 debug.3 不会被误判成比 1.1.0 高
+            if (isNewerVersion(local, best.tagName)) {
                 CheckResult.HasUpdate(
                     UpdateInfo(
-                        versionName = tagName,
-                        releaseNotes = releaseNotes,
-                        apkUrl = apkUrl,
-                        htmlUrl = htmlUrl
+                        versionName = best.tagName,
+                        releaseNotes = stripMarkdown(best.releaseNotes),
+                        apkUrl = best.apkUrl,
+                        htmlUrl = best.htmlUrl
                     )
                 )
             } else {
-                CheckResult.UpToDate(currentLabel, tagName)
+                CheckResult.UpToDate(currentLabel, best.tagName)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Check update failed", e)
@@ -392,16 +385,55 @@ object UpdateChecker {
             .trim()
     }
 
-    private fun isNewerVersion(local: String, remote: String): Boolean {
-        val localParts = local.split(".").map { it.toIntOrNull() ?: 0 }
-        val remoteParts = remote.split(".").map { it.toIntOrNull() ?: 0 }
-        val maxLen = maxOf(localParts.size, remoteParts.size)
-        for (i in 0 until maxLen) {
-            val l = localParts.getOrElse(i) { 0 }
-            val r = remoteParts.getOrElse(i) { 0 }
-            if (r > l) return true
-            if (r < l) return false
+    /**
+     * 从 releases 列表里挑出**版本最高、且带 APK 附件**的那一条。
+     *
+     * 三个过滤条件，缺一不可：
+     * - `draft` 跳过：草稿是作者还没发布的半成品
+     * - 必须有 `.apk` 附件：没有附件就没法在应用内安装（[downloadApk] 会退化成
+     *   打开网页，那正是用户不想走的路）
+     * - 不按列表顺序取第一条，而是**按版本号取最大的一条**：列表是按创建时间
+     *   排的，而补发的旧版本包 / 版本号回退都会让顺序与版本号不一致
+     *
+     * 无 Android 依赖（只用 org.json），可 JVM 单测。
+     */
+    internal fun pickBestRelease(releases: JSONArray): ReleaseCandidate? {
+        var best: ReleaseCandidate? = null
+        for (i in 0 until releases.length()) {
+            val r = releases.optJSONObject(i) ?: continue
+            if (r.optBoolean("draft", false)) continue
+            val tag = r.optString("tag_name").takeIf { it.isNotBlank() } ?: continue
+            val apkUrl = firstApkUrl(r.optJSONArray("assets")) ?: continue
+            val candidate = ReleaseCandidate(
+                tagName = tag,
+                releaseNotes = r.optString("body", ""),
+                apkUrl = apkUrl,
+                htmlUrl = r.optString("html_url", "")
+            )
+            if (best == null || isNewerVersion(best.tagName, candidate.tagName)) {
+                best = candidate
+            }
         }
-        return false
+        return best
+    }
+
+    private fun firstApkUrl(assets: JSONArray?): String? {
+        if (assets == null) return null
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            val name = asset.optString("name")
+            if (name.endsWith(".apk", ignoreCase = true)) {
+                return asset.optString("browser_download_url").takeIf { it.isNotBlank() }
+            }
+        }
+        return null
     }
 }
+
+/** [UpdateChecker.pickBestRelease] 的产物（纯数据，便于单测断言） */
+internal data class ReleaseCandidate(
+    val tagName: String,
+    val releaseNotes: String,
+    val apkUrl: String?,
+    val htmlUrl: String
+)

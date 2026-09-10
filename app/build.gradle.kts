@@ -20,10 +20,13 @@ android {
         // 无障碍真机调试包用 `-debug.N` 后缀：UpdateChecker 会剥掉**远端 tag** 的 '-' 之后
         // 部分，且 isNewerVersion 把 "0-debug" 这类段解析为 0 —— 两条合起来使调试包不会被
         // 已装版本判定为「更高版本」而误报更新（43bcb4b 已修）。
-        // ⚠ N 必须与已发布的 tag 错开：debug.4 指向 43bcb4b（versionCode 32）、
-        //   debug.5 指向 ab4a525（versionCode 33）
-        versionCode = 34
-        versionName = "1.1.0-debug.6"
+        // ⚠ N 必须与已发布的 tag 错开：debug.6 指向 6f6afdf（versionCode 34）
+        // 本包起应用内「检查更新」能正常发现 debug 包了（UpdateChecker 改用
+        // releases 列表接口 + VersionComparator 按预发布序号比较），
+        // 但**本包自身仍需手动装一次** —— 旧包的更新器读的是 /releases/latest，
+        // 该接口对全 prerelease 的仓库返回 404，装不上自己
+        versionCode = 35
+        versionName = "1.1.0-debug.7"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══
