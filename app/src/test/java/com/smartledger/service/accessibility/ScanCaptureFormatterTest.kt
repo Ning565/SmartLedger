@@ -28,7 +28,9 @@ class ScanCaptureFormatterTest {
         rootClass: String? = "FrameLayout",
         packageName: String? = "com.tencent.mm",
         mainThreadTexts: List<String> = emptyList(),
-        structure: List<UiStructureNode> = emptyList()
+        structure: List<UiStructureNode> = emptyList(),
+        activeRootShallowTexts: Int? = null,
+        windowRootShallowTexts: Int? = null
     ) = WindowCapture(
         windowIndex = index,
         windowType = 1,
@@ -42,7 +44,9 @@ class ScanCaptureFormatterTest {
         strongWords = strongWords,
         amountProbeHit = amountProbeHit,
         mainThreadTexts = mainThreadTexts,
-        structure = structure
+        structure = structure,
+        activeRootShallowTexts = activeRootShallowTexts,
+        windowRootShallowTexts = windowRootShallowTexts
     )
 
     /** 支付结果页的形状：状态词 + 金额都有 */
@@ -336,5 +340,31 @@ class ScanCaptureFormatterTest {
     fun `空树又没采到结构时显式说明 而不是留白`() {
         val lines = ScanCaptureFormatter.format(capture(listOf(window(0, emptyList())), 0))
         assertTrue(lines.any { it.contains("结构未采集") })
+    }
+
+    // ═══ debug.9：节点来源对照 ═══
+
+    @Test
+    fun `两个节点来源的浅读数要并排打出来 —— 这是换来源即修复的当场自证`() {
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(
+                    window(
+                        0, emptyList(), activeRoot = true,
+                        activeRootShallowTexts = 12, windowRootShallowTexts = 0
+                    )
+                ),
+                0
+            )
+        )
+        val probe = lines.first { it.contains("浅读对照") }
+        assertTrue(probe, probe.contains("activeRoot=12"))
+        assertTrue(probe, probe.contains("windowRoot=0"))
+    }
+
+    @Test
+    fun `没有对照数据时不占行 —— 降级路径与非调试模式下两个来源本就相同`() {
+        val lines = ScanCaptureFormatter.format(capture(listOf(paidWindow(0, activeRoot = true)), 0))
+        assertTrue(lines.none { it.contains("浅读对照") })
     }
 }

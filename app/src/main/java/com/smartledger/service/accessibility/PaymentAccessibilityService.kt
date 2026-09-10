@@ -398,6 +398,8 @@ class PaymentAccessibilityService : AccessibilityService() {
                 strongWords = PaymentSignalDetector.strongWordsIn(pageText),
                 amountProbeHit = PaymentSignalDetector.hasAmountForm(pageText),
                 mainThreadTexts = window.mainThreadTexts,
+                activeRootShallowTexts = window.sourceProbe?.activeRootTexts,
+                windowRootShallowTexts = window.sourceProbe?.windowRootTexts,
                 // 空树才采结构（debug.8）：正常页面白跑一趟 binder 遍历没意义，
                 // 而空树时这是唯一还能回答「这页为什么没字」的东西
                 structure = if (snapshot.nodes.isEmpty()) {
@@ -439,7 +441,6 @@ class PaymentAccessibilityService : AccessibilityService() {
         val list = mutableListOf<PackageWindow>()
         val raw = mutableListOf<String>()
         var note: String? = null
-        val activeWindowId = activeRoot?.windowId
 
         // 主线程基线：趁节点**刚拿到、必然有效**时浅读一次。
         // 这是与 IO 协程深读做对照的那一份读数，只在调试模式下产生成本
@@ -482,15 +483,44 @@ class PaymentAccessibilityService : AccessibilityService() {
                         continue
                     }
                     raw += "$type root=有 pkg=${pkg ?: "?（读不出，保留）"} → 采纳"
+                    // ⚠ debug.9 修复：活动窗口必须用 `rootInActiveWindow` **这个对象本身**。
+                    //
+                    // `AccessibilityWindowInfo.getRoot()` 返回的是另一个节点，而它读出来
+                    // 基本是一具空壳（className=null / childCount=0 / 不可见 / 不重要 / 0x0
+                    // —— 被回收节点的标准签名）。debug.5 加上 flagRetrieveInteractiveWindows
+                    // 让 getWindows() 生效后，就改用了它，于是微信**任何**页面都读成空树，
+                    // 包括聊天列表与「我」；而 debug.3/debug.4 走的是 rootInActiveWindow
+                    // 降级路径，那时是读得到文本的（诊断样本里有聊天页节点）。
+                    //
+                    // 顺带修正一个我自己的错误判据：debug.6 加的「主线程读数 vs IO 读数」
+                    // 对照**两个数都取自 w.root 这一个对象**，只能证明「不是跨线程失效」，
+                    // 证明不了「内容不存在」—— 为此白绕了一轮。
+                    // 活动窗口：把 rootInActiveWindow **那个对象**挑出来
+                    // （`activeRoot` 为 null 或不属于本窗口时退回 w.root）
+                    val activeNode = activeRoot?.takeIf { it.windowId == root.windowId }
+                    val isActiveRoot = activeNode != null
+                    val node = activeNode ?: root
+                    val lineTexts = baseline(node)
+                    // 两个来源确实不同时各浅读一次做对照：activeRoot 有文本而
+                    // windowRoot 为 0，就是「换节点来源即修复」的当场自证
+                    val probe = if (debug && node !== root) {
+                        NodeSourceProbe(
+                            activeRootTexts = lineTexts.size,
+                            windowRootTexts = baseline(root).size
+                        )
+                    } else {
+                        null
+                    }
                     list += PackageWindow(
-                        root = root,
+                        root = node,
                         type = w.type,
                         isActive = w.isActive,
                         isFocused = w.isFocused,
                         // windowId 比较比引用比较可靠：windows 每次返回的是新对象
-                        isActiveRoot = activeWindowId != null && root.windowId == activeWindowId,
+                        isActiveRoot = isActiveRoot,
                         rootPackageName = pkg,
-                        mainThreadTexts = baseline(root)
+                        mainThreadTexts = lineTexts,
+                        sourceProbe = probe
                     )
                 }
                 if (all.size > MAX_WINDOWS) {
@@ -543,7 +573,24 @@ class PaymentAccessibilityService : AccessibilityService() {
         /** 主线程读到的包名 —— 节点在 IO 线程可能已失效，那时再读会得到 null */
         val rootPackageName: String?,
         /** 主线程浅读到的文本（与 IO 深读对照，判定「节点失效」还是「真的为空」） */
-        val mainThreadTexts: List<String>
+        val mainThreadTexts: List<String>,
+        /** 两个节点来源的浅读对照（debug.9，仅调试模式且两者不同时有值） */
+        val sourceProbe: NodeSourceProbe? = null
+    )
+
+    /**
+     * 活动窗口的**节点来源对照**（debug.9）。
+     *
+     * 同一个窗口，用 `rootInActiveWindow` 和 `AccessibilityWindowInfo.getRoot()`
+     * 各浅读一次。debug.5 起改用后者，微信所有页面因此都读成空树 ——
+     * 这两个数并排打出来就能当场证实或证伪：
+     *
+     * - `activeRoot=12 / windowRoot=0` → 换节点来源确实是修复所在
+     * - 两边都是 0 → 假设不成立，得回到 flag 那条线上去查
+     */
+    private data class NodeSourceProbe(
+        val activeRootTexts: Int,
+        val windowRootTexts: Int
     )
 
     private fun isFeatureEnabled(): Boolean =

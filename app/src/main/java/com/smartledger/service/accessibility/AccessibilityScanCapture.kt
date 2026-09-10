@@ -96,6 +96,16 @@ data class WindowCapture(
      */
     val mainThreadTexts: List<String> = emptyList(),
     /**
+     * 节点来源对照（debug.9）：同一个窗口用两个来源各浅读一次的文本数。
+     *
+     * debug.5 起改用 `AccessibilityWindowInfo.getRoot()` 取根节点，微信**任何**
+     * 页面从此都读成空树；debug.3/debug.4 用的是 `rootInActiveWindow`，那时读得到。
+     * 这两个数并排就是「换来源即修复」的当场自证：
+     * `activeRoot=12 / windowRoot=0` 证实；两边都是 0 则证伪，回去查 flag。
+     */
+    val activeRootShallowTexts: Int? = null,
+    val windowRootShallowTexts: Int? = null,
+    /**
      * 该窗口的**视图结构**（debug.8）。**只在 [nodes] 为空时才有值**。
      *
      * 空树时「有什么字」已经问不出东西了，结构是唯一还能推进的问题：
@@ -295,6 +305,14 @@ object ScanCaptureFormatter {
                     "命中词=${w.strongWords.joinToString("/").ifBlank { "—" }} " +
                     "金额形态=${if (w.amountProbeHit) "有" else "无"}"
             )
+            // 节点来源对照（debug.9）：只有两个来源确实不同时才打，
+            // 正常情况（降级路径 / 非调试）不占行
+            if (w.activeRootShallowTexts != null && w.windowRootShallowTexts != null) {
+                add(
+                    "      浅读对照：activeRoot=${w.activeRootShallowTexts} " +
+                        "/ windowRoot=${w.windowRootShallowTexts}"
+                )
+            }
             val limit = if (w.windowIndex == capture.chosenIndex) MAX_NODES_CHOSEN else MAX_NODES_OTHER
             if (w.nodes.isEmpty()) {
                 // 空树才有结构（debug.8）：这是「为什么这页没字」唯一的答案来源

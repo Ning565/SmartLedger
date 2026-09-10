@@ -26,8 +26,8 @@ android {
         // 从 debug.7 起应用内「检查更新」能正常发现后续 debug 包
         // （UpdateChecker 改用 releases 列表接口 + VersionComparator 按预发布序号比较），
         // 所以 debug.8 可以直接在应用里升级，不必再手动装一次。
-        versionCode = 36
-        versionName = "1.1.0-debug.8"
+        versionCode = 37
+        versionName = "1.1.0-debug.9"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══
