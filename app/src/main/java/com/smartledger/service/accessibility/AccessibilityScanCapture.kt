@@ -12,6 +12,42 @@ internal fun packageAlias(pkg: String): String = when (pkg) {
 }
 
 /**
+ * 空树是否该重扫（纯函数，可 JVM 单测）。
+ *
+ * 触发条件刻意收得很紧 —— 只有「**扫到了窗口**但整页一个文本节点都没有」
+ * 才重试。其余情况都不重试：
+ *
+ * - `failed`（遍历抛异常）：再走一遍多半还是抛，且异常本身要留在诊断里
+ * - `windowCount == 0`：走的是 [ScanCapture.rootAvailable] = false 那条路，
+ *   问题在「拿不到窗口」而不是「窗口是空的」，重试无意义
+ * - 已经用完重试次数：**页面真的为空**时反复重扫只是白耗电
+ *
+ * 这三条是 debug.5 那次「5/5 读出 0 个文本节点」之后加的 ——
+ * 当时的 dump 分不清"节点失效"和"页面本来就没文本"，重试 + 节点数序列
+ * （`尝试=0/0/12` 还是 `0/0/0`）刚好把这两者分开。
+ */
+internal fun shouldRetryEmptyTree(
+    textNodeTotal: Int,
+    windowCount: Int,
+    failed: Boolean,
+    attempt: Int,
+    maxRetries: Int
+): Boolean = !failed && windowCount > 0 && textNodeTotal == 0 && attempt < maxRetries
+
+/**
+ * 事件类型 → 短标签（纯函数，刻意不引 android 常量以便 JVM 单测）。
+ *
+ * `STATE` = TYPE_WINDOW_STATE_CHANGED，页面切换，**无条件**触发完整扫描；
+ * `CONTENT` = TYPE_WINDOW_CONTENT_CHANGED，高频刷新，要先过 quickProbe 才算数。
+ * 两者混在一起数就分不清「扫描少」是事件少还是探测全被拦。
+ */
+internal fun eventTypeLabel(eventType: Int): String = when (eventType) {
+    0x20 -> "STATE"
+    0x800 -> "CONTENT"
+    else -> "其他(0x${Integer.toHexString(eventType)})"
+}
+
+/**
  * 无障碍「完整扫描」的观测快照（纯数据，不依赖 Android API，可 JVM 单测）。
  *
  * ## 为什么需要它
@@ -46,7 +82,19 @@ data class WindowCapture(
     /** 整页文本命中的强状态词（空 = 没有状态词） */
     val strongWords: List<String>,
     /** 整页是否存在金额形态（与探测层同一张宽松正则） */
-    val amountProbeHit: Boolean
+    val amountProbeHit: Boolean,
+    /**
+     * **主线程**浅层读到的文本（≤20 节点/深 3，debug.6）。
+     *
+     * 与 [nodes] 是同一个窗口的两次读数：一个在拿到窗口的**那一刻**于主线程读，
+     * 一个在 IO 协程遍历。两者对比才能区分 debug.5 真机暴露的两种「文本节点=0」：
+     *
+     * - [mainThreadTexts] 有、[nodes] 空 → 节点在跨线程期间失效（时机问题，软件层可修）
+     * - 两边都空 → 该窗口的无障碍树本来就没有文本（自绘/受限窗口，得评估 OCR）
+     *
+     * 非调试模式恒为空列表（读它是有成本的 binder 遍历）。
+     */
+    val mainThreadTexts: List<String> = emptyList()
 ) {
     /** 双条件同时满足才是「支付强信号」（与 [PaymentSignalDetector.hasStrongSignal] 同口径） */
     val signalHit: Boolean get() = strongWords.isNotEmpty() && amountProbeHit
@@ -68,7 +116,18 @@ data class ScanCapture(
     /** 用的哪一个窗口的文本判进位，null = 没有可用快照 */
     val chosenIndex: Int?,
     val windows: List<WindowCapture>,
-    val outcome: String
+    val outcome: String,
+    /**
+     * 各次尝试抓到的**文本节点总数**（debug.6 空树重试）。
+     *
+     * 一次逻辑扫描因为空树会重扫若干次，这里记 `[0, 0, 12]` 就能一眼看出
+     * 「第 3 次才拿到」——直接区分「渲染慢」（重试能救）与「一直为空」
+     * （重试也救不了，得换手段）。长度为 1 表示没有触发重试。
+     *
+     * 重试不各写一条抓取：环形缓冲只有 5 格，一次转账的重试就能把它塞满，
+     * 反而把真正有用的前几次扫描挤出去。
+     */
+    val attempts: List<Int> = listOf(windows.sumOf { it.nodes.size })
 )
 
 /** 选窗的输入（纯数据，供 [AccessibilityWindowSelector] 单测） */
@@ -134,10 +193,14 @@ object ScanCaptureFormatter {
 
     fun format(capture: ScanCapture): List<String> = buildList {
         val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(capture.at))
+        // 尝试次数 >1 说明空树触发了重扫，把各次的节点数摊开 ——
+        // 「0/0/12」= 渲染慢，重试救回来了；「0/0/0」= 一直读不到，重试没用
+        val attemptNote =
+            if (capture.attempts.size > 1) " 尝试=${capture.attempts.joinToString("/")}" else ""
         add(
             "[$time] ${packageAlias(capture.packageName)} root可用=${capture.rootAvailable} " +
-                "窗口数=${capture.windows.size} 选中=${capture.chosenIndex ?: "-"} " +
-                "→ ${capture.outcome}"
+                "窗口数=${capture.windows.size} 选中=${capture.chosenIndex ?: "-"}" +
+                attemptNote + " → ${capture.outcome}"
         )
         capture.windowsNote?.let { add("  ⚠ $it") }
 
@@ -147,10 +210,18 @@ object ScanCaptureFormatter {
                 if (w.isActive) add("active")
                 if (w.isFocused) add("focused")
             }.joinToString(" ").ifBlank { "—" }
+            // pkg 必须打：dump 顶层只显示**事件**的包名，而候选窗口里混进
+            // 别的包（activeRoot 降级那条不做包名过滤）时，只看节点内容
+            // 会把桌面文件夹的节点误读成微信支付页 —— debug.5 的 dump 就是这样
             add(
-                "  [w${w.windowIndex} $marks type=${w.windowType}] " +
+                "  [w${w.windowIndex} $marks type=${w.windowType} " +
+                    // 用**完整包名**而不是别名/短名：这一列的作用就是识别
+                    // 「这条窗口到底属于谁」，com.miui.home 与 com.tencent.mm
+                    // 缩成 home / mm 反而不好认
+                    "pkg=${w.packageName ?: "null"}] " +
                     "root=${w.rootClass ?: "null"} 子节点=${w.rootChildCount} " +
-                    "文本节点=${w.nodes.size} 信号=${if (w.signalHit) "命中" else "未命中"} " +
+                    "文本节点=${w.nodes.size} 主线文本=${w.mainThreadTexts.size} " +
+                    "信号=${if (w.signalHit) "命中" else "未命中"} " +
                     "命中词=${w.strongWords.joinToString("/").ifBlank { "—" }} " +
                     "金额形态=${if (w.amountProbeHit) "有" else "无"}"
             )

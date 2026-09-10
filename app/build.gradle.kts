@@ -20,10 +20,10 @@ android {
         // 无障碍真机调试包用 `-debug.N` 后缀：UpdateChecker 会剥掉**远端 tag** 的 '-' 之后
         // 部分，且 isNewerVersion 把 "0-debug" 这类段解析为 0 —— 两条合起来使调试包不会被
         // 已装版本判定为「更高版本」而误报更新（43bcb4b 已修）。
-        // ⚠ N 必须与已发布的 tag 错开：v1.1.0-debug.4 已指向 43bcb4b（versionCode 32），
-        //   本包是它之后的第一个改动，故取 debug.5 / versionCode 33
-        versionCode = 33
-        versionName = "1.1.0-debug.5"
+        // ⚠ N 必须与已发布的 tag 错开：debug.4 指向 43bcb4b（versionCode 32）、
+        //   debug.5 指向 ab4a525（versionCode 33）
+        versionCode = 34
+        versionName = "1.1.0-debug.6"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══

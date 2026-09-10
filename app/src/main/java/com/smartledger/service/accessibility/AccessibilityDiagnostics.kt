@@ -88,8 +88,14 @@ object AccessibilityDiagnostics {
         scanCaptures.addLast(capture)
     }
 
-    fun onEvent(pkg: String) {
-        pushRing("${packageAlias(pkg)} 事件 ${timeFmt.format(Date())}")
+    /**
+     * @param eventType AccessibilityEvent.eventType。debug.6 起进 ring ——
+     *   `STATE` 才是**直接**触发完整扫描的那条路，`CONTENT` 要先过 quickProbe。
+     *   debug.5 真机 172 个事件 / 0 次探测命中 / 19 次扫描，光看「事件」两个字
+     *   分不清是「CONTENT 全被拦」还是「STATE 本来就少」，这条能一眼分开。
+     */
+    fun onEvent(pkg: String, eventType: Int) {
+        pushRing("${packageAlias(pkg)} 事件 ${eventTypeLabel(eventType)} ${timeFmt.format(Date())}")
         bump(IDX_EVENTS)
     }
 
@@ -132,6 +138,12 @@ object AccessibilityDiagnostics {
         val counts = readCounts(context)
         val events = recentEvents.toList()
         return buildString {
+            // 生成时间必须打头：弹窗的文本是**打开那一刻**算一次的（SettingsScreen
+            // 里的 remember），用户开着弹窗去转账、切回来看到的仍是旧快照。
+            // debug.5 实测时用户前后发来的两份 dump 逐字相同、最近动态却停在
+            // 转账之前 3 分钟 —— 没有这一行就分不清是「没记录」还是「没刷新」。
+            appendLine("生成时间：${timeFmt.format(Date())}（关闭弹窗再打开可刷新）")
+            appendLine()
             appendLine("今日计数：")
             appendLine("· Accessibility 事件：${counts[IDX_EVENTS]}")
             appendLine("· 探测命中：${counts[IDX_PROBE]}")

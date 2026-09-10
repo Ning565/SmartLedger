@@ -62,6 +62,23 @@ class PaymentAccessibilityService : AccessibilityService() {
         /** 窗口不在 `windows` 列表里（仅 activeRoot 降级）时的占位类型 */
         private const val WINDOW_TYPE_UNKNOWN = -1
 
+        /**
+         * 整页一个文本节点都没抓到时的重扫次数（debug.6）。
+         *
+         * debug.5 真机：微信窗口 5/5 读出 `文本节点=0`，其中 4 次 `root=null`
+         * （节点已失效）。失效的节点**重读同一个对象没用**，所以重试是重走
+         * [performFullScan]（重新取 `rootInActiveWindow`），而不是重扫旧节点。
+         * 两次延迟刻意不同（150ms / 400ms）：既能盖住"页面还在渲染"，
+         * 也能盖住"节点刚好在窗口切换中失效"，同时又不像固定轮询那样
+         * 在页面真的为空时反复空转。
+         */
+        private const val MAX_EMPTY_RETRIES = 2
+        private val RETRY_DELAYS_MS = longArrayOf(150L, 400L)
+
+        /** 主线程基线的浅读上限（节点数 / 深度）——只在调试模式下读 */
+        private const val MAIN_THREAD_PROBE_NODES = 20
+        private const val MAIN_THREAD_PROBE_DEPTH = 3
+
         private val ALLOWED_PACKAGES = setOf(
             AccessibilityFingerprintBuilder.WECHAT_PACKAGE,
             AccessibilityFingerprintBuilder.ALIPAY_PACKAGE
@@ -76,6 +93,13 @@ class PaymentAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val handler = Handler(Looper.getMainLooper())
     private var pendingRunnable: Runnable? = null
+
+    /**
+     * 待执行的空树重扫（debug.6）。新事件到来时一并取消 ——
+     * 否则重扫会和刚安排的那次扫描并发跑，两次扫描各自入账，
+     * 一笔转账记成两笔。
+     */
+    private var pendingRetry: Runnable? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -97,7 +121,7 @@ class PaymentAccessibilityService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: return
         if (packageName !in ALLOWED_PACKAGES) return
 
-        AccessibilityDiagnostics.onEvent(packageName)
+        AccessibilityDiagnostics.onEvent(packageName, event.eventType)
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
@@ -163,6 +187,16 @@ class PaymentAccessibilityService : AccessibilityService() {
         event.source?.let { source ->
             parts += UiTreeSnapshotExtractor.extractShallow(source)
         }
+
+        // 真机校准（debug.6）：`event.source` 对微信的 CONTENT_CHANGED **经常为 null**，
+        // 上一版到这里就 `return false` 了 —— 而 CONTENT_CHANGED 恰恰是支付页
+        // 渲染完成那一刻唯一还在推的事件类型（STATE_CHANGED 只在页面**开始**切换时来一次）。
+        // debug.5 真机 172 个事件 0 次探测命中，卡的就是这里。
+        // 退回焦点窗口做同一套浅层探测：成本与 source 路径同量级
+        // （40 节点 / 深 4，主线程几百微秒），且判定口径完全一致。
+        if (parts.isEmpty()) {
+            rootInActiveWindow?.let { parts += UiTreeSnapshotExtractor.extractShallow(it) }
+        }
         if (parts.isEmpty()) return false
 
         return PaymentSignalDetector.hasStrongSignal(parts.joinToString(" "))
@@ -172,6 +206,8 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     private fun scheduleFullScan(packageName: String) {
         pendingRunnable?.let(handler::removeCallbacks)
+        // 新事件意味着页面又变了：上一轮的待重扫已经过时，取消掉
+        pendingRetry?.also { handler.removeCallbacks(it); pendingRetry = null }
         val runnable = Runnable { performFullScan(packageName) }
         pendingRunnable = runnable
         handler.postDelayed(runnable, DEBOUNCE_MS)
@@ -179,13 +215,23 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     // ═══ Level 2：完整扫描 + 解析 + 入账（方案 4.2） ═══
 
-    private fun performFullScan(packageName: String) {
-        // rootInActiveWindow 与 windows 都是 binder 调用，只在主线程取一次
-        val activeRoot = rootInActiveWindow
-        val (candidates, windowsNote) = collectPackageWindows(packageName, activeRoot)
-
+    /**
+     * @param attempt 第几次尝试（0 起，见 [MAX_EMPTY_RETRIES]）
+     * @param attemptsSoFar 之前各次尝试抓到的文本节点总数，最终写进 [ScanCapture.attempts]
+     */
+    private fun performFullScan(
+        packageName: String,
+        attempt: Int = 0,
+        attemptsSoFar: List<Int> = emptyList()
+    ) {
         // 调试开关在主线程读一次，协程里复用（避免在 IO 线程读 prefs）
         val debug = debugEnabled()
+
+        // rootInActiveWindow 与 windows 都是 binder 调用，只在主线程取一次。
+        // 主线程基线（浅读）也在这里做 —— 它与后面 IO 协程里的深读是
+        // **同一个窗口的两次读数**，两者之差就是「节点失效」与「真的没内容」的分界
+        val activeRoot = rootInActiveWindow
+        val (candidates, windowsNote) = collectPackageWindows(packageName, activeRoot, debug)
 
         if (candidates.isEmpty()) {
             // 事件到了但一个同包名窗口都拿不到（页面切换间隙/系统限制）
@@ -206,13 +252,16 @@ class PaymentAccessibilityService : AccessibilityService() {
             return
         }
 
-        AccessibilityDiagnostics.onFullScan(packageName)
+        // 只统计第 0 次：重试是同一笔转账的补救，不是新的一次扫描。
+        // 计进去会让「完整扫描」这个数在 debug.5/debug.6 之间没法直接比
+        if (attempt == 0) AccessibilityDiagnostics.onFullScan(packageName)
 
         scope.launch {
             val at = System.currentTimeMillis()
             var outcome = "未命中支付信号"
             var windows: List<WindowCapture> = emptyList()
             var chosenIndex: Int? = null
+            var failed = false
 
             try {
                 // C6：遍历与解析全部在 IO 线程；每个候选窗口各扫一次
@@ -235,22 +284,39 @@ class PaymentAccessibilityService : AccessibilityService() {
                     scanned.firstOrNull { it.capture.windowIndex == chosenIndex }
                 )
             } catch (e: Exception) {
+                failed = true
                 outcome = "扫描异常：${e.javaClass.simpleName}"
                 Log.e(TAG, "Full scan failed", e)
-            } finally {
-                if (debug) {
-                    AccessibilityDiagnostics.onScanCapture(
-                        ScanCapture(
-                            at = at,
-                            packageName = packageName,
-                            rootAvailable = true,
-                            windowsNote = windowsNote,
-                            chosenIndex = chosenIndex,
-                            windows = windows,
-                            outcome = outcome
-                        )
+            }
+
+            val total = windows.sumOf { it.nodes.size }
+            val attempts = attemptsSoFar + total
+
+            // 空树重试（debug.6）：整页一个文本节点都没有时，换个时间点重走一遍
+            // （重新取 rootInActiveWindow —— 失效的节点重读同一个对象没有意义）。
+            // 中间几次不单独记抓取，只把节点数并进 attempts —— 环形缓冲只有 5 格，
+            // 一次转账的重试就能把它塞满。
+            if (shouldRetryEmptyTree(total, windows.size, failed, attempt, MAX_EMPTY_RETRIES)) {
+                val retry = Runnable { performFullScan(packageName, attempt + 1, attempts) }
+                pendingRetry?.let(handler::removeCallbacks)
+                pendingRetry = retry
+                handler.postDelayed(retry, RETRY_DELAYS_MS[attempt])
+                return@launch
+            }
+
+            if (debug) {
+                AccessibilityDiagnostics.onScanCapture(
+                    ScanCapture(
+                        at = at,
+                        packageName = packageName,
+                        rootAvailable = true,
+                        windowsNote = windowsNote,
+                        chosenIndex = chosenIndex,
+                        windows = windows,
+                        outcome = outcome,
+                        attempts = attempts
                     )
-                }
+                )
             }
         }
     }
@@ -307,13 +373,17 @@ class PaymentAccessibilityService : AccessibilityService() {
                 windowType = window.type,
                 isActive = window.isActive,
                 isFocused = window.isFocused,
-                packageName = window.root.packageName?.toString(),
+                // 包名用**主线程**读到的值：节点在这里可能已经失效，
+                // 失效节点读 packageName 返回 null，会把「这是哪个窗口」这条
+                // 最关键的信息丢掉（debug.5 的 dump 就因为这个差点被误读）
+                packageName = window.rootPackageName,
                 rootClass = window.root.className?.toString()?.substringAfterLast('.'),
                 rootChildCount = window.root.childCount,
                 isActiveRoot = window.isActiveRoot,
                 nodes = snapshot.nodes,
                 strongWords = PaymentSignalDetector.strongWordsIn(pageText),
-                amountProbeHit = PaymentSignalDetector.hasAmountForm(pageText)
+                amountProbeHit = PaymentSignalDetector.hasAmountForm(pageText),
+                mainThreadTexts = window.mainThreadTexts
             ),
             snapshot = snapshot
         )
@@ -332,11 +402,22 @@ class PaymentAccessibilityService : AccessibilityService() {
      */
     private fun collectPackageWindows(
         packageName: String,
-        activeRoot: AccessibilityNodeInfo?
+        activeRoot: AccessibilityNodeInfo?,
+        debug: Boolean
     ): Pair<List<PackageWindow>, String?> {
         val list = mutableListOf<PackageWindow>()
         var note: String? = null
         val activeWindowId = activeRoot?.windowId
+
+        // 主线程基线：趁节点**刚拿到、必然有效**时浅读一次。
+        // 这是与 IO 协程深读做对照的那一份读数，只在调试模式下产生成本
+        fun baseline(root: AccessibilityNodeInfo): List<String> =
+            if (!debug) emptyList()
+            else UiTreeSnapshotExtractor.extractShallow(
+                root,
+                maxNodes = MAIN_THREAD_PROBE_NODES,
+                maxDepth = MAIN_THREAD_PROBE_DEPTH
+            )
 
         try {
             val all = windows.orEmpty()
@@ -346,14 +427,17 @@ class PaymentAccessibilityService : AccessibilityService() {
                 for (w in all) {
                     if (list.size >= MAX_WINDOWS) break
                     val root = w.root ?: continue
-                    if (root.packageName?.toString() != packageName) continue
+                    val pkg = root.packageName?.toString()
+                    if (pkg != packageName) continue
                     list += PackageWindow(
                         root = root,
                         type = w.type,
                         isActive = w.isActive,
                         isFocused = w.isFocused,
                         // windowId 比较比引用比较可靠：windows 每次返回的是新对象
-                        isActiveRoot = activeWindowId != null && root.windowId == activeWindowId
+                        isActiveRoot = activeWindowId != null && root.windowId == activeWindowId,
+                        rootPackageName = pkg,
+                        mainThreadTexts = baseline(root)
                     )
                 }
                 if (all.size > MAX_WINDOWS) {
@@ -366,6 +450,9 @@ class PaymentAccessibilityService : AccessibilityService() {
         }
 
         if (activeRoot != null && list.none { it.isActiveRoot }) {
+            // 这条**不做包名过滤**（降级路径，宁可多扫也不漏），
+            // 所以它可能属于别的包 —— rootPackageName 会如实记下来，
+            // 诊断里靠 pkg= 字段区分（debug.5 的启动器文件夹就是这么混进来的）
             list.add(
                 0,
                 PackageWindow(
@@ -373,7 +460,9 @@ class PaymentAccessibilityService : AccessibilityService() {
                     type = WINDOW_TYPE_UNKNOWN,
                     isActive = true,
                     isFocused = true,
-                    isActiveRoot = true
+                    isActiveRoot = true,
+                    rootPackageName = activeRoot.packageName?.toString(),
+                    mainThreadTexts = baseline(activeRoot)
                 )
             )
         }
@@ -389,7 +478,11 @@ class PaymentAccessibilityService : AccessibilityService() {
         val type: Int,
         val isActive: Boolean,
         val isFocused: Boolean,
-        val isActiveRoot: Boolean
+        val isActiveRoot: Boolean,
+        /** 主线程读到的包名 —— 节点在 IO 线程可能已失效，那时再读会得到 null */
+        val rootPackageName: String?,
+        /** 主线程浅读到的文本（与 IO 深读对照，判定「节点失效」还是「真的为空」） */
+        val mainThreadTexts: List<String>
     )
 
     private fun isFeatureEnabled(): Boolean =

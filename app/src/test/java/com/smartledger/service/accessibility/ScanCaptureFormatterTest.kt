@@ -25,19 +25,22 @@ class ScanCaptureFormatterTest {
         strongWords: List<String> = emptyList(),
         amountProbeHit: Boolean = false,
         activeRoot: Boolean = false,
-        rootClass: String? = "FrameLayout"
+        rootClass: String? = "FrameLayout",
+        packageName: String? = "com.tencent.mm",
+        mainThreadTexts: List<String> = emptyList()
     ) = WindowCapture(
         windowIndex = index,
         windowType = 1,
         isActive = activeRoot,
         isFocused = activeRoot,
-        packageName = "com.tencent.mm",
+        packageName = packageName,
         rootClass = rootClass,
         rootChildCount = 3,
         isActiveRoot = activeRoot,
         nodes = nodes,
         strongWords = strongWords,
-        amountProbeHit = amountProbeHit
+        amountProbeHit = amountProbeHit,
+        mainThreadTexts = mainThreadTexts
     )
 
     /** 支付结果页的形状：状态词 + 金额都有 */
@@ -53,7 +56,8 @@ class ScanCaptureFormatterTest {
         windows: List<WindowCapture>,
         chosenIndex: Int?,
         outcome: String = "未命中支付信号",
-        windowsNote: String? = null
+        windowsNote: String? = null,
+        attempts: List<Int> = listOf(windows.sumOf { it.nodes.size })
     ) = ScanCapture(
         at = 1_700_000_000_000L,
         packageName = "com.tencent.mm",
@@ -61,7 +65,8 @@ class ScanCaptureFormatterTest {
         windowsNote = windowsNote,
         chosenIndex = chosenIndex,
         windows = windows,
-        outcome = outcome
+        outcome = outcome,
+        attempts = attempts
     )
 
     @Test
@@ -165,4 +170,59 @@ class ScanCaptureFormatterTest {
         val lines = captures.flatMap { ScanCaptureFormatter.format(it) }
         assertEquals(2, lines.count { it.startsWith("[") })
     }
+
+    // ═══ debug.6：让下一份 dump 能一锤定音的三条 ═══
+
+    @Test
+    fun `窗口行必须带自己的包名 —— 顶层包名是事件的 不是窗口的`() {
+        // debug.5 的坑：dump 顶层写「微信」，w0 里却是桌面文件夹的节点
+        // （activeRoot 降级那条不做包名过滤）。没有 pkg= 就只能靠节点内容猜
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(
+                    paidWindow(0, activeRoot = true),
+                    window(1, listOf(node("金融理财")), packageName = "com.miui.home")
+                ),
+                chosenIndex = 0
+            )
+        )
+        val home = lines.first { it.startsWith("  [w1") }
+        assertTrue(home, home.contains("pkg=com.miui.home"))
+        val wechat = lines.first { it.startsWith("  [w0") }
+        assertTrue(wechat, wechat.contains("pkg=com.tencent.mm"))
+    }
+
+    @Test
+    fun `主线文本数与文本节点数必须分开显示`() {
+        // 这两个数相等才是「真的没有内容」；主线 > 0 而 IO = 0 是「节点跨线程失效」
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(window(0, emptyList(), activeRoot = true, mainThreadTexts = listOf("支付成功", "¥0.01"))),
+                chosenIndex = 0
+            )
+        )
+        val w0 = lines.first { it.startsWith("  [w0") }
+        assertTrue(w0, w0.contains("文本节点=0"))
+        assertTrue(w0, w0.contains("主线文本=2"))
+    }
+
+    @Test
+    fun `没有重试时不显示尝试数列`() {
+        val lines = ScanCaptureFormatter.format(capture(listOf(paidWindow(0, activeRoot = true)), 0))
+        assertTrue(lines.first(), !lines.first().contains("尝试="))
+    }
+
+    @Test
+    fun `重试过就把各次节点数摊开 —— 0杠0杠12 与 0杠0杠0 是两种结论`() {
+        val recovered = ScanCaptureFormatter
+            .format(capture(listOf(paidWindow(0, activeRoot = true)), 0, attempts = listOf(0, 0, 12)))
+            .first()
+        assertTrue(recovered, recovered.contains("尝试=0/0/12"))
+
+        val neverRecovered = ScanCaptureFormatter
+            .format(capture(listOf(window(0, emptyList(), activeRoot = true)), 0, attempts = listOf(0, 0, 0)))
+            .first()
+        assertTrue(neverRecovered, neverRecovered.contains("尝试=0/0/0"))
+    }
+
 }
