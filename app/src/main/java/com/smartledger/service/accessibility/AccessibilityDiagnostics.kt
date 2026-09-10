@@ -2,16 +2,22 @@ package com.smartledger.service.accessibility
 
 import android.content.Context
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicIntegerArray
 
 /**
  * 无障碍采集诊断（C5，方案 6.3）。
  *
  * 只在 debug_toasts 开启或 BuildConfig.DEBUG 时由设置页展示；
- * 数据本身只记**数量与极短摘要**（包名 + 结果），不落页面全文 ——
- * 与方案 6.3 的 Release 日志红线一致。
+ * 计数与摘要不落页面全文 —— 与方案 6.3 的 Release 日志红线一致。
+ *
+ * 唯一例外是 [lastScanSample]（真机校准 9/10）：调试模式下保存
+ * **最近一次完整扫描**的前 30 条节点文本（每条截断 24 字，内存 only，
+ * 进程重启即清，关闭调试开关后不再记录）。它的唯一用途是让用户
+ * 能直接看到真实页面的无障碍文本 —— 用于校准词表（预设词形与
+ * 真实页面不符是首轮真机测试三场景全部失效的根因）。
  *
  * 存储：最近事件走内存 ring（进程重启即清，够诊断用）；
  * 今日计数走 prefs 按日 key，跨日自动重置。
@@ -32,10 +38,36 @@ object AccessibilityDiagnostics {
 
     private const val RING_SIZE = 8
 
+    /** 扫描样本上限（条数）与单条截断长度 */
+    private const val SAMPLE_MAX_ITEMS = 30
+    private const val SAMPLE_MAX_CHARS = 24
+
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    /** 最近事件摘要 ring：Service 主线程写、设置页主线程读，同线程模型无需加锁 */
-    private val recentEvents = ArrayDeque<String>()
+    /**
+     * 最近事件摘要 ring：Service 主线程与 IO 协程都写、设置页主线程读，
+     * 改用并发安全的实现（performFullScan 的 IO 协程会调 onRecognized 等）
+     */
+    private val recentEvents = ConcurrentLinkedDeque<String>()
+
+    /**
+     * 最近一次完整扫描的页面文本样本（真机校准，仅调试模式记录）。
+     * Service 的 IO 线程写、设置页主线程读 → @Volatile 保证可见性；
+     * 整体替换而非逐条修改，读到的要么是旧快照要么是新快照，不会交错。
+     */
+    @Volatile
+    private var lastScanSample: List<String> = emptyList()
+
+    /** 调试模式下记录最近一次完整扫描的节点文本（信号是否命中都记） */
+    fun onScanTexts(texts: List<String>, signalHit: Boolean) {
+        lastScanSample = buildList {
+            add((if (signalHit) "信号命中" else "信号未命中") + "，节点文本：")
+            texts.take(SAMPLE_MAX_ITEMS).forEach { add("· " + it.take(SAMPLE_MAX_CHARS)) }
+        }
+    }
+
+    /** 最近扫描样本（设置页诊断弹窗展示） */
+    fun sampleSummary(): List<String> = lastScanSample
 
     fun onEvent(pkg: String) {
         pushRing("${alias(pkg)} 事件 ${timeFmt.format(Date())}")
@@ -63,6 +95,12 @@ object AccessibilityDiagnostics {
         bump(IDX_DEDUP)
     }
 
+    /** 真机校准（9/10）：事件到了但 rootInActiveWindow 不可用 ——
+     *  不计入扫描计数，但进 ring 让用户能在诊断里看到 */
+    fun onRootUnavailable(pkg: String) {
+        pushRing("${alias(pkg)} 窗口不可用（页面切换间隙或系统限制） ${timeFmt.format(Date())}")
+    }
+
     /** 诊断摘要文本（设置页弹窗展示） */
     fun buildSummary(context: Context): String {
         val counts = readCounts(context)
@@ -81,17 +119,25 @@ object AccessibilityDiagnostics {
             } else {
                 events.reversed().forEach { appendLine("· $it") }
             }
+            appendLine()
+            appendLine("最近扫描样本（调试模式，最多30条）：")
+            val sample = lastScanSample
+            if (sample.isEmpty()) {
+                appendLine("（暂无 —— 未开调试模式，或服务从未执行过完整扫描）")
+            } else {
+                sample.forEach { appendLine(it) }
+            }
         }
     }
 
     // ═══ 计数（prefs，按日重置） ═══
 
     private fun bump(index: Int) {
-        // 计数只在 Service 进程里发生；无 Context 的内存兜底计数，读时合并 prefs
-        memCounts[index]++
+        // Service 主线程与 IO 协程都会调 —— 原子操作
+        memCounts.getAndIncrement(index)
     }
 
-    private val memCounts = IntArray(COUNT_FIELDS)
+    private val memCounts = AtomicIntegerArray(COUNT_FIELDS)
 
     private fun readCounts(context: Context): IntArray {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -102,31 +148,29 @@ object AccessibilityDiagnostics {
                 ?.mapNotNull { it.toIntOrNull() } ?: emptyList()
             val merged = IntArray(COUNT_FIELDS)
             for (i in 0 until COUNT_FIELDS) {
-                merged[i] = (saved.getOrNull(i) ?: 0) + memCounts[i]
+                merged[i] = (saved.getOrNull(i) ?: 0) + memCounts.getAndSet(i, 0)
             }
             // 读取即结算：把进程内累计并入 prefs 并清零内存。
             // 否则每次弹窗都会把同一批 memCounts 再加一遍，计数虚高。
-            memCounts.fill(0)
             prefs.edit()
                 .putString(KEY_COUNTS, merged.joinToString(","))
                 .apply()
             return merged
         }
         // 跨日：只保留本次进程内的计数（今天的）
-        return memCounts.copyOf().also {
-            memCounts.fill(0)
-            prefs.edit()
-                .putString(KEY_TODAY, today)
-                .putString(KEY_COUNTS, it.joinToString(","))
-                .apply()
-        }
+        val todayCounts = IntArray(COUNT_FIELDS) { memCounts.getAndSet(it, 0) }
+        prefs.edit()
+            .putString(KEY_TODAY, today)
+            .putString(KEY_COUNTS, todayCounts.joinToString(","))
+            .apply()
+        return todayCounts
     }
 
     private fun todayKey(): String =
         SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
 
     private fun pushRing(item: String) {
-        while (recentEvents.size >= RING_SIZE) recentEvents.removeFirst()
+        while (recentEvents.size >= RING_SIZE) recentEvents.pollFirst()
         recentEvents.addLast(item)
     }
 

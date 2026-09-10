@@ -116,6 +116,83 @@ class WeChatAccessibilityParserTest {
         assertNull(WeChatAccessibilityParser.parse(snapshot()))
     }
 
+    // ═══ 真机校准（9/10 三场景全失效）：微信转账详情页真实词形 ═══
+
+    @Test
+    fun `真机词形 - 已转账记支出`() {
+        // 微信转出后详情页状态词形是「已转账」而非预设的「转账成功」
+        val p = WeChatAccessibilityParser.parse(
+            snapshot("转账详情", "已转账", "¥0.02", "转账给 张三")
+        )!!
+        assertEquals(0.02, p.amount, 1e-9)
+        assertEquals("expense", p.type)
+    }
+
+    @Test
+    fun `真机词形 - 已收钱记收入`() {
+        // 收款方点开转账并收款后，页面状态词形是「已收钱」而非预设的「已收款」
+        val p = WeChatAccessibilityParser.parse(
+            snapshot("已收钱", "¥0.02", "李四 转给你")
+        )!!
+        assertEquals(0.02, p.amount, 1e-9)
+        assertEquals("income", p.type)
+    }
+
+    @Test
+    fun `真机词形 - 朋友已收钱不误记收入`() {
+        // 我转给朋友、朋友收款后，我看到的状态页「朋友已收钱」包含收入词
+        // 「已收钱」—— 靠 C3 排除词优先拦截，防止我的转出被误记为收入
+        assertNull(WeChatAccessibilityParser.parse(
+            snapshot("转账详情", "朋友已收钱", "¥500.00", "张三 已收钱")
+        ))
+    }
+
+    // ═══ 真机校准（9/10 用户提供真实页面文本）：完整时序闭环 ═══
+
+    @Test
+    fun `真机词形 - 转出后的待确认详情页记支出`() {
+        // 「支付成功」页停留仅 1~2 秒，防抖后扫到的往往是这个详情页：
+        // 「待张三确认收款 / 你发起了一笔转账」—— 钱在发起时已扣，应记支出。
+        // 注意「待张三确认收款」不含连续的「待收款/待确认」子串，不会被排除词误拦
+        val p = WeChatAccessibilityParser.parse(
+            snapshot("待张三确认收款", "你发起了一笔转账", "¥0.02", "转账给 张三")
+        )!!
+        assertEquals(0.02, p.amount, 1e-9)
+        assertEquals("expense", p.type)
+    }
+
+    @Test
+    fun `真机词形 - 对方收款后转出方查看不误记收入`() {
+        // 转出方事后打开详情页，状态已变「已收款」—— 但页面同时有
+        // 「你发起了一笔转账」（转出方视角铁证），income 必须拒绝
+        assertNull(WeChatAccessibilityParser.parse(
+            snapshot("已收款", "你发起了一笔转账", "¥500.00", "转账给 张三")
+        ))
+    }
+
+    @Test
+    fun `真机词形 - 被转方已接收页面记收入`() {
+        // 收款方页面：「已被接收 / 已收款」—— 无转出方视角词，正常记收入
+        val p = WeChatAccessibilityParser.parse(
+            snapshot("已被接收", "已收款", "¥0.02", "李四 转给你")
+        )!!
+        assertEquals(0.02, p.amount, 1e-9)
+        assertEquals("income", p.type)
+    }
+
+    @Test
+    fun `真机词形 - 您已收款零钱页记收入`() {
+        // 用户实测页面：您已收款，资金已存入零钱 / 0.01 / 零钱余额 / 转账时间 / 收款时间
+        val p = WeChatAccessibilityParser.parse(
+            snapshot(
+                "您已收款，资金已存入零钱", "0.01", "零钱余额", "123.45",
+                "转账时间：", "14:22", "收款时间：", "14:23"
+            )
+        )!!
+        assertEquals(0.01, p.amount, 1e-9)
+        assertEquals("income", p.type)
+    }
+
     // ═══ P0-3：营销/积分页面不误记收入 ═══
 
     @Test

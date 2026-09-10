@@ -166,4 +166,18 @@ class AlipayAccessibilityParserTest {
         // N3 双向锁定：「收益」「余额宝」与「已到账」同节点/紧邻 → 排除
         assertNull(AlipayAccessibilityParser.parse(snapshot("余额宝收益已到账", "¥3.20")))
     }
+
+    // ═══ 真机校准（9/10 用户提供真实页面文本） ═══
+
+    @Test
+    fun `真机词形 - 转账成功页记支出且标签值结构取商户`() {
+        // 用户实测页面：转账成功 / 0.01 / 收款方：xxx / 交易方式：xxx
+        // 「收款方」是标签，下一个节点才是商户名（P1-4 标签-值结构）
+        val p = AlipayAccessibilityParser.parse(
+            snapshot("转账成功", "0.01", "收款方：", "张三", "交易方式：", "余额")
+        )!!
+        assertEquals(0.01, p.amount, 1e-9)
+        assertEquals("expense", p.type)
+        assertEquals("张三", p.merchant)
+    }
 }

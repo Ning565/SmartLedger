@@ -109,13 +109,18 @@ class PaymentAccessibilityService : AccessibilityService() {
     // ═══ Level 1：浅层探测（方案 3.4，C1 已补齐实现） ═══
 
     /**
-     * P2-6：先做零成本的文本判断，命中直接返回；只有文本为空时才读
-     * event.source 做浅层树遍历（binder 调用）。
+     * 真机校准（9/10 撤销 P2-6 短路盲区）：
      *
-     * 「event.text 有内容但无信号 → 跳过」的取舍：页面级变化已由
-     * WINDOW_STATE_CHANGED 兑住（页面先出现再变化，state 事件必然先触发
-     * full scan），CONTENT_CHANGED 的增量文本才是主要信号源 ——
-     * 这把高频事件的主线程树遍历降到了最低。
+     * P2-6 曾把「event.text 有内容但无信号」直接判负、不读树 —— 隐含假设
+     * 「支付信号会出现在事件的增量文本里」。真机上微信页面是**碎片化渲染**：
+     * 每次 CONTENT_CHANGED 只带一小块文本（如单独的金额「0.01」或
+     * 「零钱余额」），谁都不含完整强词 → 全部被拦 → 若页面又是 fragment
+     * 级切换（无 STATE_CHANGED 兑底）→ **一次扫描都不会发生**。
+     *
+     * 现在的结构：
+     * - event.text 有信号 → 立即命中（零成本快速路径，保留 P2-6 的优化）
+     * - 否则（含文本为空）→ 浅层树探测（40 节点/深 4，主线程几百微秒级，
+     *   方案 3.4 原始设计；完整扫描才是 IO 协程的事）
      */
     private fun quickProbe(event: AccessibilityEvent): Boolean {
         val parts = mutableListOf<String>()
@@ -126,10 +131,11 @@ class PaymentAccessibilityService : AccessibilityService() {
         }
         event.contentDescription?.toString()?.let(parts::add)
 
-        if (parts.isNotEmpty()) {
-            return PaymentSignalDetector.hasStrongSignal(parts.joinToString(" "))
+        if (parts.isNotEmpty() && PaymentSignalDetector.hasStrongSignal(parts.joinToString(" "))) {
+            return true
         }
 
+        // 文本无信号（或为空）→ 浅层树探测兜底（碎片化渲染的信号拼不全在事件文本里）
         event.source?.let { source ->
             parts += UiTreeSnapshotExtractor.extractShallow(source)
         }
@@ -150,18 +156,34 @@ class PaymentAccessibilityService : AccessibilityService() {
     // ═══ Level 2：完整扫描 + 解析 + 入账（方案 4.2） ═══
 
     private fun performFullScan(packageName: String) {
-        val root = rootInActiveWindow ?: return
+        val root = rootInActiveWindow
+        if (root == null) {
+            // 真机校准（9/10）：事件到了但活动窗口不可用（页面切换间隙/
+            // 服务被系统限制）—— 记入诊断避免静默失败无法定位
+            AccessibilityDiagnostics.onRootUnavailable(packageName)
+            return
+        }
         AccessibilityDiagnostics.onFullScan(packageName)
+        val debug = debugEnabled()
 
         scope.launch {
             try {
                 // C6：遍历与解析全部在 IO 线程
                 val snapshot = UiTreeSnapshotExtractor.extract(root, packageName)
-                if (snapshot.nodes.isEmpty()) return@launch
+                if (snapshot.nodes.isEmpty()) {
+                    recordScanSample(debug, emptyList(), false)
+                    return@launch
+                }
 
                 // 信号复查（quickProbe 只是浅层，这里用整页文本再判一次）
                 val pageText = snapshot.nodes.joinToString(" ") { it.text }
-                if (!PaymentSignalDetector.hasStrongSignal(pageText)) return@launch
+                val signalHit = PaymentSignalDetector.hasStrongSignal(pageText)
+
+                // 真机校准（9/10）：调试模式下保存页面文本样本 ——
+                // 信号命中与否都记，词形不匹配的页面正是需要看到的
+                recordScanSample(debug, snapshot.nodes.map { it.text }, signalHit)
+
+                if (!signalHit) return@launch
 
                 val parser: AccessibilityPaymentParser = when (packageName) {
                     AccessibilityFingerprintBuilder.WECHAT_PACKAGE -> WeChatAccessibilityParser
@@ -196,4 +218,12 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     private fun isFeatureEnabled(): Boolean =
         getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_FEATURE, true)
+
+    private fun debugEnabled(): Boolean =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("debug_toasts", false)
+
+    private fun recordScanSample(enabled: Boolean, texts: List<String>, signalHit: Boolean) {
+        if (!enabled) return
+        AccessibilityDiagnostics.onScanTexts(texts, signalHit)
+    }
 }

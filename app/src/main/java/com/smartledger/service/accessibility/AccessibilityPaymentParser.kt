@@ -56,6 +56,16 @@ abstract class BasePaymentParser : AccessibilityPaymentParser {
      */
     protected open val incomeExcludedWords: List<String> = emptyList()
 
+    /**
+     * 收入方向的**视角排除词**（真机校准 9/10，整页判断、无邻近约束）。
+     *
+     * 微信转出方的转账详情页在对方收款后状态变为「已收款」——
+     * 「已收款」是收入词，但这是「我的转出被收到」，绝不能记成收入。
+     * 页面上的「你发起了一笔转账」是转出方视角的铁证特征：
+     * 只要它在页面上，income 方向一律拒绝（转出已在「支付成功」时记过）。
+     */
+    protected open val incomeViewExcludedWords: List<String> = emptyList()
+
     final override fun parse(snapshot: UiSnapshot): ParsedPayment? {
         val nodes = snapshot.nodes
         if (nodes.isEmpty()) return null
@@ -74,8 +84,12 @@ abstract class BasePaymentParser : AccessibilityPaymentParser {
         }
         if (hits.isEmpty()) return null
 
-        // 3. 金额（打分制，失败即放弃 —— 「红包已领取」无金额不入账）
-        val amountHit = ScreenAmountExtractor.extractBest(nodes) ?: return null
+        // 3. 金额（打分制，失败即放弃 —— 「红包已领取」无金额不入账）。
+        // 真机校准（9/10）：状态词命中索引起到裸数字加分作用 ——
+        // 微信收款页「您已收款/0.01/零钱余额/123.45」里 0.01 紧贴状态词，
+        // 余额数字不会，这是两者的关键区分器
+        val statusIndexes = hits.map { it.nodeIndex }.toSet()
+        val amountHit = ScreenAmountExtractor.extractBest(nodes, statusIndexes) ?: return null
 
         // 4. 邻近性（M1）：状态词必须贴近金额
         val nearHits = hits.filter {
@@ -98,6 +112,14 @@ abstract class BasePaymentParser : AccessibilityPaymentParser {
                     statusIndexes.any { s -> kotlin.math.abs(n.index - s) <= MARKETING_STATUS_MAX_DISTANCE }
             }
             if (marketingNearStatus) return null
+        }
+
+        // 5.6 收入方向的视角排除（真机校准 9/10）：整页含转出方视角词时，
+        // income 一律拒绝 —— 对方收款后我再看的详情页显示「已收款」，
+        // 但「你发起了一笔转账」证明这是我的转出而非我的收入
+        if (type == "income" && incomeViewExcludedWords.isNotEmpty()) {
+            val pageText = nodes.joinToString(" ") { it.text }
+            if (incomeViewExcludedWords.any { pageText.contains(it) }) return null
         }
 
         // 6. 商户（可空）

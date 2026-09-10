@@ -10,6 +10,9 @@ package com.smartledger.service.accessibility
  * +100  ¥32.00 / ￥32.00（货币符前缀，最强特征）
  * +80   32.00元 / 500元（带单位）
  * +80   与「实付 / 金额 / 收款 / 转账金额」标签距离 ≤ 2 节点
+ * +80   裸数字与状态词命中节点距离 ≤ 2（真机校准 9/10：微信收款页
+ *        「您已收款，资金已存入零钱 / 0.01 / 零钱余额 / 123.45」—— 转账金额
+ *        紧贴状态词，余额数字离得远，这是两者的关键区分器）
  * +60   全页唯一金额候选
  *
  * -100  与「订单号 / 交易号 / 单号」标签距离 ≤ 2 节点
@@ -32,6 +35,7 @@ object ScreenAmountExtractor {
     private const val SCORE_PREFIX = 100
     private const val SCORE_UNIT = 80
     private const val SCORE_NEAR_LABEL = 80
+    private const val SCORE_NEAR_STATUS = 80
     private const val SCORE_UNIQUE = 60
     private const val PENALTY_NEAR_ORDER = -100
     private const val PENALTY_NEAR_TIME = -80
@@ -70,9 +74,11 @@ object ScreenAmountExtractor {
     )
 
     /**
+     * @param statusIndexes 状态词命中节点的 index 集合（由 Parser 传入，
+     *        用于裸数字的邻近加分；默认空集合时不启用该规则）
      * @return 得分最高且 ≥ [MIN_SCORE] 的金额；无合格候选返回 null
      */
-    fun extractBest(nodes: List<UiTextNode>): ScreenAmountHit? {
+    fun extractBest(nodes: List<UiTextNode>, statusIndexes: Set<Int> = emptySet()): ScreenAmountHit? {
         val candidates = collectCandidates(nodes)
         if (candidates.isEmpty()) return null
 
@@ -86,6 +92,9 @@ object ScreenAmountExtractor {
             var score = c.baseScore
             if (unique) score += SCORE_UNIQUE
             if (nearAny(c.nodeIndex, positiveIdx)) score += SCORE_NEAR_LABEL
+            // 真机校准（9/10）：转账金额紧贴状态词，零钱余额数字不会 ——
+            // 与时间负分对称，只对裸数字生效
+            if (c.bare && nearAny(c.nodeIndex, statusIndexes.toList())) score += SCORE_NEAR_STATUS
             if (nearAny(c.nodeIndex, orderIdx)) score += PENALTY_NEAR_ORDER
             if (c.bare && nearAny(c.nodeIndex, timeIdx)) score += PENALTY_NEAR_TIME
             if (c.bare && integerDigits(c) >= 7) score += PENALTY_BARE_LONG
