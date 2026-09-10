@@ -27,7 +27,8 @@ class ScanCaptureFormatterTest {
         activeRoot: Boolean = false,
         rootClass: String? = "FrameLayout",
         packageName: String? = "com.tencent.mm",
-        mainThreadTexts: List<String> = emptyList()
+        mainThreadTexts: List<String> = emptyList(),
+        structure: List<UiStructureNode> = emptyList()
     ) = WindowCapture(
         windowIndex = index,
         windowType = 1,
@@ -40,7 +41,8 @@ class ScanCaptureFormatterTest {
         nodes = nodes,
         strongWords = strongWords,
         amountProbeHit = amountProbeHit,
-        mainThreadTexts = mainThreadTexts
+        mainThreadTexts = mainThreadTexts,
+        structure = structure
     )
 
     /** 支付结果页的形状：状态词 + 金额都有 */
@@ -57,12 +59,14 @@ class ScanCaptureFormatterTest {
         chosenIndex: Int?,
         outcome: String = "未命中支付信号",
         windowsNote: String? = null,
-        attempts: List<Int> = listOf(windows.sumOf { it.nodes.size })
+        attempts: List<Int> = listOf(windows.sumOf { it.nodes.size }),
+        rawWindows: List<String> = emptyList()
     ) = ScanCapture(
         at = 1_700_000_000_000L,
         packageName = "com.tencent.mm",
         rootAvailable = true,
         windowsNote = windowsNote,
+        rawWindows = rawWindows,
         chosenIndex = chosenIndex,
         windows = windows,
         outcome = outcome,
@@ -225,4 +229,112 @@ class ScanCaptureFormatterTest {
         assertTrue(neverRecovered, neverRecovered.contains("尝试=0/0/0"))
     }
 
+    // ═══ debug.8：把「这页为什么没字」问到底 ═══
+
+    private fun struct(
+        depth: Int,
+        className: String,
+        childCount: Int = 0,
+        liveChildCount: Int = childCount,
+        visible: Boolean = true,
+        important: Boolean = true,
+        width: Int = 1080,
+        height: Int = 200
+    ) = UiStructureNode(
+        depth = depth,
+        className = className,
+        viewId = null,
+        childCount = childCount,
+        liveChildCount = liveChildCount,
+        visibleToUser = visible,
+        importantForAccessibility = important,
+        width = width,
+        height = height
+    )
+
+    @Test
+    fun `原始窗口清单要打出被丢掉的窗口与原因`() {
+        // debug.7 的盲区：`窗口数=1` 是**过滤后**的数 —— 支付页若在过滤阶段
+        // 就被丢掉，诊断里连它存在过都看不出来
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(paidWindow(0, activeRoot = true)),
+                0,
+                rawWindows = listOf(
+                    "w0 type=1 active focused root=有 pkg=com.tencent.mm → 采纳",
+                    "w1 type=3 — root=无 → 丢弃：读不到 root",
+                    "w2 type=2 — root=有 pkg=com.miui.home → 丢弃：包名不符"
+                )
+            )
+        )
+        assertTrue(lines.any { it.contains("原始 windows=3") })
+        assertTrue(lines.any { it.contains("丢弃：读不到 root") })
+        assertTrue(lines.any { it.contains("pkg=com.miui.home") })
+    }
+
+    @Test
+    fun `空树时改列结构 而不是只留一句无文本节点`() {
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(
+                    window(
+                        0, emptyList(), activeRoot = true,
+                        structure = listOf(
+                            struct(0, "android.widget.FrameLayout", childCount = 1),
+                            struct(1, "android.view.SurfaceView")
+                        )
+                    )
+                ),
+                0
+            )
+        )
+        assertTrue(lines.any { it.contains("FrameLayout") && it.contains("子=1") })
+        assertTrue(lines.any { it.contains("SurfaceView") })
+    }
+
+    @Test
+    fun `结构行要标出被剪枝 不可见 零尺寸 不重要 —— 四种不同的病因`() {
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(
+                    window(
+                        0, emptyList(), activeRoot = true,
+                        structure = listOf(
+                            // childCount 报 3 却一个都取不到 → 无障碍在这一层剪了枝
+                            struct(1, "android.widget.LinearLayout", childCount = 3, liveChildCount = 0),
+                            struct(2, "android.widget.TextView", visible = false),
+                            struct(3, "android.widget.TextView", width = 0, height = 0),
+                            struct(4, "android.widget.TextView", important = false)
+                        )
+                    )
+                ),
+                0
+            )
+        )
+        assertTrue(lines.any { it.contains("子=3→0") })
+        assertTrue(lines.any { it.contains("不可见") })
+        assertTrue(lines.any { it.contains("尺寸=0") })
+        assertTrue(lines.any { it.contains("不重要") })
+    }
+
+    @Test
+    fun `有文本节点时不打结构 —— 结构只在问不出字的时候才有意义`() {
+        val lines = ScanCaptureFormatter.format(
+            capture(
+                listOf(
+                    paidWindow(0, activeRoot = true).copy(
+                        structure = listOf(struct(1, "android.view.SurfaceView"))
+                    )
+                ),
+                0
+            )
+        )
+        assertTrue(lines.none { it.contains("▸") })
+    }
+
+    @Test
+    fun `空树又没采到结构时显式说明 而不是留白`() {
+        val lines = ScanCaptureFormatter.format(capture(listOf(window(0, emptyList())), 0))
+        assertTrue(lines.any { it.contains("结构未采集") })
+    }
 }

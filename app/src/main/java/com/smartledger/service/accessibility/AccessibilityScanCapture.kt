@@ -94,7 +94,16 @@ data class WindowCapture(
      *
      * 非调试模式恒为空列表（读它是有成本的 binder 遍历）。
      */
-    val mainThreadTexts: List<String> = emptyList()
+    val mainThreadTexts: List<String> = emptyList(),
+    /**
+     * 该窗口的**视图结构**（debug.8）。**只在 [nodes] 为空时才有值**。
+     *
+     * 空树时「有什么字」已经问不出东西了，结构是唯一还能推进的问题：
+     * 类名能区分自绘（SurfaceView）与 H5（WebView），
+     * `childCount` 与实际取到的子节点数之差能看出无障碍在哪一层剪了枝。
+     * 非空树时不采集（正常页面白跑一趟 binder 遍历没有意义）。
+     */
+    val structure: List<UiStructureNode> = emptyList()
 ) {
     /** 双条件同时满足才是「支付强信号」（与 [PaymentSignalDetector.hasStrongSignal] 同口径） */
     val signalHit: Boolean get() = strongWords.isNotEmpty() && amountProbeHit
@@ -113,6 +122,17 @@ data class ScanCapture(
     val rootAvailable: Boolean,
     /** `windows` 为空 / 抛异常时的原因（flag 未生效会在这里显形） */
     val windowsNote: String?,
+    /**
+     * `getWindows()` 返回的**原始**窗口清单，一条一行（debug.8）。
+     *
+     * 与 [windows] 的区别：这里是**过滤前**的全部窗口，每条都带
+     * 「采纳 / 丢弃 + 原因」。旧转储的 `窗口数=N` 是过滤后的数 ——
+     * 支付页如果在过滤阶段就被丢掉，诊断里连它存在过都看不出来，
+     * 而这恰恰是 debug.7 之后最可疑的一条线索。
+     *
+     * 放在 [windowsNote] 之后、且有默认值：既有的构造点不必逐个改。
+     */
+    val rawWindows: List<String> = emptyList(),
     /** 用的哪一个窗口的文本判进位，null = 没有可用快照 */
     val chosenIndex: Int?,
     val windows: List<WindowCapture>,
@@ -129,6 +149,47 @@ data class ScanCapture(
      */
     val attempts: List<Int> = listOf(windows.sumOf { it.nodes.size })
 )
+
+/** 一个**原始**窗口的处置结果（debug.8） */
+enum class WindowDecision(val accepted: Boolean) {
+    /** 包名与目标一致 → 采纳 */
+    ACCEPT_MATCH(true),
+
+    /**
+     * 包名读不出（null）→ **仍然采纳**。
+     *
+     * 这是 debug.8 改掉的那个坑：节点失效或窗口受限时 `packageName`
+     * 就是 null，而旧写法 `if (pkg != packageName) continue` 在 null 时
+     * 也成立 → 窗口被**静默丢掉**，诊断里连它存在过都看不出来。
+     * 支付页若在这样一个窗口里，它从来没进过候选。
+     */
+    ACCEPT_UNKNOWN_PKG(true),
+
+    /** 包名不符（读得出来，且不是目标包）→ 丢弃 */
+    REJECT_OTHER_PKG(false),
+
+    /** 同包名但已超出单次扫描的窗口数上限 → 丢弃 */
+    REJECT_OVER_LIMIT(false)
+}
+
+/**
+ * 决定一个原始窗口是否进候选（纯函数，可 JVM 单测）。
+ *
+ * 判定顺序是有意的：**先比包名、再判上限**。包名不符的窗口不该占
+ * [maxWindows] 的名额，否则一个无关窗口排在同包名窗口前面时，
+ * 真正想看的那个会因「超出上限」被丢掉。
+ */
+internal fun decideWindow(
+    pkg: String?,
+    targetPackage: String,
+    acceptedSoFar: Int,
+    maxWindows: Int
+): WindowDecision = when {
+    pkg != null && pkg != targetPackage -> WindowDecision.REJECT_OTHER_PKG
+    acceptedSoFar >= maxWindows -> WindowDecision.REJECT_OVER_LIMIT
+    pkg == null -> WindowDecision.ACCEPT_UNKNOWN_PKG
+    else -> WindowDecision.ACCEPT_MATCH
+}
 
 /** 选窗的输入（纯数据，供 [AccessibilityWindowSelector] 单测） */
 data class WindowCandidate(
@@ -191,6 +252,9 @@ object ScanCaptureFormatter {
     /** 未选中窗口的节点上限：只需要够认出「这是聊天页」即可，避免整段输出爆炸 */
     private const val MAX_NODES_OTHER = 20
 
+    /** 空树时每窗口的结构行上限：够看出「这是什么页面」即可 */
+    private const val MAX_STRUCTURE_ROWS = 40
+
     fun format(capture: ScanCapture): List<String> = buildList {
         val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(capture.at))
         // 尝试次数 >1 说明空树触发了重扫，把各次的节点数摊开 ——
@@ -203,6 +267,12 @@ object ScanCaptureFormatter {
                 attemptNote + " → ${capture.outcome}"
         )
         capture.windowsNote?.let { add("  ⚠ $it") }
+
+        // 过滤**前**的窗口清单（debug.8）：被丢掉的窗口只在这里可见。
+        // 单起一节而不是混进下面的候选列表 —— 这一节回答「系统给了我们什么」，
+        // 下面那一节回答「我们拿到的窗口里有什么」，两个问题不能混
+        if (capture.rawWindows.isNotEmpty()) add("  原始 windows=${capture.rawWindows.size}：")
+        capture.rawWindows.forEach { add("    raw $it") }
 
         capture.windows.forEach { w ->
             val marks = buildList {
@@ -227,7 +297,16 @@ object ScanCaptureFormatter {
             )
             val limit = if (w.windowIndex == capture.chosenIndex) MAX_NODES_CHOSEN else MAX_NODES_OTHER
             if (w.nodes.isEmpty()) {
-                add("      （无文本节点）")
+                // 空树才有结构（debug.8）：这是「为什么这页没字」唯一的答案来源
+                if (w.structure.isEmpty()) {
+                    add("      （无文本节点，且结构未采集）")
+                } else {
+                    add("      （无文本节点，改列结构）")
+                    w.structure.take(MAX_STRUCTURE_ROWS).forEach { add(structureLine(it)) }
+                    if (w.structure.size > MAX_STRUCTURE_ROWS) {
+                        add("      …（结构截断，共 ${w.structure.size} 个节点）")
+                    }
+                }
             } else {
                 w.nodes.take(limit).forEach { n ->
                     add("      · L${n.depth} ${shortClass(n.className)} ${shortId(n.viewId)} \"${n.text}\"")
@@ -242,4 +321,29 @@ object ScanCaptureFormatter {
 
     private fun shortId(id: String?): String =
         id?.let { "id=" + it.substringAfterLast('/') }.orEmpty()
+
+    /**
+     * 结构转储的一行（debug.8）。
+     *
+     * 三个「异常才打」的标注是刻意省的：
+     * - `子=3→0`：childCount 报 3 但一个都取不到 → 无障碍在这一层剪了枝
+     * - `不可见`：isVisibleToUser=false → 窗口在过渡态，内容被系统裁掉
+     * - `不重要`：微信主动把这一支对无障碍隐藏了
+     *
+     * 尺寸为 0 也单独标注：节点在屏幕外，其子树本就不可读。
+     */
+    private fun structureLine(n: UiStructureNode): String = buildString {
+        append("      ▸ L").append(n.depth).append(' ').append(shortClass(n.className))
+        if (n.childCount < 0) {
+            append(" （节点已失效，读不出）")
+            return@buildString
+        }
+        append(" 子=").append(n.childCount)
+        if (n.liveChildCount != n.childCount) append("→").append(n.liveChildCount)
+        shortId(n.viewId).takeIf { it.isNotEmpty() }?.let { append(' ').append(it) }
+        if (!n.visibleToUser) append(" 不可见")
+        if (!n.importantForAccessibility) append(" 不重要")
+        if (n.width == 0 || n.height == 0) append(" 尺寸=0")
+        else append(" ${n.width}x${n.height}")
+    }
 }

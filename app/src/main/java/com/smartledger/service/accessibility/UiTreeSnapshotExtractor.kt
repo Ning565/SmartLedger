@@ -1,5 +1,6 @@
 package com.smartledger.service.accessibility
 
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
@@ -26,6 +27,42 @@ data class UiSnapshot(
     val packageName: String,
     val nodes: List<UiTextNode>,
     val capturedAt: Long
+)
+
+/**
+ * 视图结构的一行（纯数据，debug.8）。
+ *
+ * 与 [UiTextNode] 互补：[UiTextNode] 回答「这页有什么字」，本类回答
+ * **「这页为什么没字」**。
+ *
+ * ## 为什么需要它
+ * debug.7 真机：微信窗口 4/4 读出 `文本节点=0`，且主线程与 IO 两次读数
+ * **都是 0**（排除了节点失效）、重试 3 次**还是 0**（排除了渲染慢）、
+ * `pkg=com.tencent.mm activeRoot active focused`（排除了扫错窗口）。
+ * 三条都排除后只剩「这棵树本来就没有文本」，但旧转储在
+ * `（无文本节点）` 一行就断了 —— 看不出那棵树长什么样，也就分不清
+ * 到底是自绘（要 OCR）、WebView（还有救）、还是被系统剪枝（改选窗）。
+ *
+ * 本类记的每个字段都对应一个待排除的可能：
+ * - [className] 是 `SurfaceView` → 自绘；是 `WebView` → H5 虚拟树没建起来
+ * - [liveChildCount] 与 [childCount] 不等 → 无障碍在这一层把子树剪掉了
+ * - [visibleToUser] = false → 窗口在过渡态/被遮挡，内容被系统裁掉
+ * - [width]/[height] 为 0 → 节点在屏幕外，其子树本就不可读
+ * - [importantForAccessibility] = false → 微信主动对无障碍隐藏了这一支
+ */
+data class UiStructureNode(
+    val depth: Int,
+    val className: String?,
+    val viewId: String?,
+    /** `childCount` 报告的子节点数 */
+    val childCount: Int,
+    /** `getChild(i)` 实际返回非 null 的个数 —— 与 [childCount] 不等即为被剪枝 */
+    val liveChildCount: Int,
+    val visibleToUser: Boolean,
+    /** `isImportantForAccessibility()`：微信可主动把一支标记为不重要 */
+    val importantForAccessibility: Boolean,
+    val width: Int,
+    val height: Int
 )
 
 /** 文本归一化（纯函数，可单测） */
@@ -73,6 +110,10 @@ object UiTreeSnapshotExtractor {
 
     private const val SHALLOW_MAX_NODES = 40
     private const val SHALLOW_MAX_DEPTH = 4
+
+    /** 结构转储的节点/深度上限 —— 只在空树时跑，取够看出「这是什么页面」即可 */
+    private const val STRUCTURE_MAX_NODES = 60
+    private const val STRUCTURE_MAX_DEPTH = 12
 
     fun extract(root: AccessibilityNodeInfo, packageName: String): UiSnapshot {
         val result = mutableListOf<UiTextNode>()
@@ -154,5 +195,67 @@ object UiTreeSnapshotExtractor {
 
         visit(source, 0)
         return texts
+    }
+
+    /**
+     * 转储视图**结构**（debug.8）：类名 / 子节点数 / 实际取到的子节点数 /
+     * 可见性 / 重要性 / 尺寸，不含文本。
+     *
+     * 只在 `extract` 一个文本节点都没抓到（空树）时调用 —— 那时
+     * 「有什么字」已经问不出东西了，「这棵树长什么样」才是唯一能推进的问题。
+     * 因此它的成本只落在**本来就没内容的窗口**上，正常页面一次都不跑。
+     *
+     * 逐节点 try/catch：遍历过程中节点可能在窗口切换时失效，
+     * 单个节点读炸不该让整份转储丢掉（这正是它存在的意义所在）。
+     */
+    fun extractStructure(
+        root: AccessibilityNodeInfo,
+        maxNodes: Int = STRUCTURE_MAX_NODES,
+        maxDepth: Int = STRUCTURE_MAX_DEPTH
+    ): List<UiStructureNode> {
+        val out = mutableListOf<UiStructureNode>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        queue.add(root to 0)
+
+        while (queue.isNotEmpty() && out.size < maxNodes) {
+            val (node, depth) = queue.removeFirst()
+            try {
+                val childCount = node.childCount
+                val liveChildren = mutableListOf<AccessibilityNodeInfo>()
+                for (i in 0 until childCount) {
+                    node.getChild(i)?.let { liveChildren += it }
+                }
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                out += UiStructureNode(
+                    depth = depth,
+                    className = node.className?.toString(),
+                    viewId = node.viewIdResourceName,
+                    childCount = childCount,
+                    liveChildCount = liveChildren.size,
+                    visibleToUser = node.isVisibleToUser,
+                    importantForAccessibility = node.isImportantForAccessibility,
+                    width = rect.width(),
+                    height = rect.height()
+                )
+                if (depth < maxDepth) {
+                    liveChildren.forEach { queue.add(it to depth + 1) }
+                }
+            } catch (_: Exception) {
+                // 失效节点：记一行「读不出」比整份丢掉有用
+                out += UiStructureNode(
+                    depth = depth,
+                    className = null,
+                    viewId = null,
+                    childCount = -1,
+                    liveChildCount = -1,
+                    visibleToUser = false,
+                    importantForAccessibility = true,
+                    width = 0,
+                    height = 0
+                )
+            }
+        }
+        return out
     }
 }

@@ -59,6 +59,16 @@ class PaymentAccessibilityService : AccessibilityService() {
         /** 单次扫描最多考察的同包名窗口数（多窗口遍历的耗电上限） */
         private const val MAX_WINDOWS = 4
 
+        /**
+         * 原始窗口清单的枚举上限（debug.8）。
+         *
+         * 清单要的是「系统到底给了几个窗口、每个为什么被丢」，所以必须在
+         * [MAX_WINDOWS] **之外**单独收口 —— 否则被上限挡掉的那些窗口
+         * 连一行记录都没有，等于没观测。8 个足够覆盖真实场景（含输入法、
+         * 悬浮层），又不至于在异常情况下把主线程拖住。
+         */
+        private const val RAW_WINDOW_LIMIT = 8
+
         /** 窗口不在 `windows` 列表里（仅 activeRoot 降级）时的占位类型 */
         private const val WINDOW_TYPE_UNKNOWN = -1
 
@@ -231,7 +241,9 @@ class PaymentAccessibilityService : AccessibilityService() {
         // 主线程基线（浅读）也在这里做 —— 它与后面 IO 协程里的深读是
         // **同一个窗口的两次读数**，两者之差就是「节点失效」与「真的没内容」的分界
         val activeRoot = rootInActiveWindow
-        val (candidates, windowsNote) = collectPackageWindows(packageName, activeRoot, debug)
+        val collected = collectPackageWindows(packageName, activeRoot, debug)
+        val candidates = collected.candidates
+        val windowsNote = collected.note
 
         if (candidates.isEmpty()) {
             // 事件到了但一个同包名窗口都拿不到（页面切换间隙/系统限制）
@@ -243,6 +255,7 @@ class PaymentAccessibilityService : AccessibilityService() {
                         packageName = packageName,
                         rootAvailable = false,
                         windowsNote = windowsNote,
+                        rawWindows = collected.rawWindows,
                         chosenIndex = null,
                         windows = emptyList(),
                         outcome = "rootInActiveWindow 与 windows 都拿不到窗口"
@@ -311,6 +324,7 @@ class PaymentAccessibilityService : AccessibilityService() {
                         packageName = packageName,
                         rootAvailable = true,
                         windowsNote = windowsNote,
+                        rawWindows = collected.rawWindows,
                         chosenIndex = chosenIndex,
                         windows = windows,
                         outcome = outcome,
@@ -383,7 +397,14 @@ class PaymentAccessibilityService : AccessibilityService() {
                 nodes = snapshot.nodes,
                 strongWords = PaymentSignalDetector.strongWordsIn(pageText),
                 amountProbeHit = PaymentSignalDetector.hasAmountForm(pageText),
-                mainThreadTexts = window.mainThreadTexts
+                mainThreadTexts = window.mainThreadTexts,
+                // 空树才采结构（debug.8）：正常页面白跑一趟 binder 遍历没意义，
+                // 而空树时这是唯一还能回答「这页为什么没字」的东西
+                structure = if (snapshot.nodes.isEmpty()) {
+                    UiTreeSnapshotExtractor.extractStructure(window.root)
+                } else {
+                    emptyList()
+                }
             ),
             snapshot = snapshot
         )
@@ -399,13 +420,24 @@ class PaymentAccessibilityService : AccessibilityService() {
      *
      * activeRoot 一定会进候选并排在最前：即使 windows 不可用，
      * 行为也退化成改造前的「只扫活动窗口」，不会比现在更差。
+     *
+     * ## debug.8：两处收紧
+     * 1. **包名读不出（null）的窗口不再被丢**。旧写法 `if (pkg != packageName) continue`
+     *    在 `pkg == null` 时也成立 —— 而节点失效或窗口受限时读 `packageName`
+     *    就是 null。支付页若在这样一个窗口里，它从来没进过候选，诊断里
+     *    连它存在过都看不出来。现在 `pkg == null` 一律保留，由
+     *    [PackageWindow.rootPackageName] 如实记成 null 供事后分辨。
+     * 2. **原始清单记进 [WindowCollection.rawWindows]**，每个窗口一条
+     *    「采纳 / 丢弃 + 原因」，且在 [MAX_WINDOWS] 上限之外单独收口 ——
+     *    被上限挡掉的窗口也要留痕，否则等于没观测。
      */
     private fun collectPackageWindows(
         packageName: String,
         activeRoot: AccessibilityNodeInfo?,
         debug: Boolean
-    ): Pair<List<PackageWindow>, String?> {
+    ): WindowCollection {
         val list = mutableListOf<PackageWindow>()
+        val raw = mutableListOf<String>()
         var note: String? = null
         val activeWindowId = activeRoot?.windowId
 
@@ -424,11 +456,32 @@ class PaymentAccessibilityService : AccessibilityService() {
             if (all.isEmpty()) {
                 note = "windows 返回空（flagRetrieveInteractiveWindows 未生效或被系统限制）"
             } else {
-                for (w in all) {
-                    if (list.size >= MAX_WINDOWS) break
-                    val root = w.root ?: continue
+                for ((i, w) in all.withIndex()) {
+                    if (i >= RAW_WINDOW_LIMIT) break
+                    val marks = buildList {
+                        if (w.isActive) add("active")
+                        if (w.isFocused) add("focused")
+                    }.joinToString(" ").ifBlank { "—" }
+                    val type = "w$i type=${w.type} $marks"
+
+                    val root = w.root
+                    if (root == null) {
+                        // root 为 null 的窗口我们**没有任何办法**读到内容，
+                        // 只能留痕：这本身就是「支付页可能藏在这里」的一条证据
+                        raw += "$type root=无 → 丢弃：读不到 root"
+                        continue
+                    }
                     val pkg = root.packageName?.toString()
-                    if (pkg != packageName) continue
+                    val decision = decideWindow(pkg, packageName, list.size, MAX_WINDOWS)
+                    if (!decision.accepted) {
+                        val why = when (decision) {
+                            WindowDecision.REJECT_OTHER_PKG -> "包名不符"
+                            else -> "超出 $MAX_WINDOWS 个上限"
+                        }
+                        raw += "$type root=有 pkg=${pkg ?: "?"} → 丢弃：$why"
+                        continue
+                    }
+                    raw += "$type root=有 pkg=${pkg ?: "?（读不出，保留）"} → 采纳"
                     list += PackageWindow(
                         root = root,
                         type = w.type,
@@ -465,9 +518,17 @@ class PaymentAccessibilityService : AccessibilityService() {
                     mainThreadTexts = baseline(activeRoot)
                 )
             )
+            raw += "（降级）rootInActiveWindow 不在上面的清单里，额外作为 w0 加入"
         }
-        return list to note
+        return WindowCollection(list, note, raw)
     }
+
+    /** [collectPackageWindows] 的产物：候选窗口 + 「为什么没有备选窗口」+ 过滤前的原始清单 */
+    private data class WindowCollection(
+        val candidates: List<PackageWindow>,
+        val note: String?,
+        val rawWindows: List<String>
+    )
 
     /** 一个候选窗口：诊断用的 [WindowCapture] + 解析用的 [UiSnapshot] */
     private data class WindowScan(val capture: WindowCapture, val snapshot: UiSnapshot)
